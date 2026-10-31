@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unicorn-studio"
+version = "2.1.0"
+description = "Linux desktop app for Pimoroni Cosmic, Galactic and Stellar Unicorn boards running the Unicorn Studio firmware (MQTT)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Unicorn Studio contributors" }]
+requires-python = ">=3.9"
+dependencies = ["PySide6-Essentials>=6.8"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: POSIX :: Linux",
+  "Environment :: X11 Applications :: Qt",
+  "License :: OSI Approved :: MIT License",
+]
+
+[project.optional-dependencies]
+keyring = ["keyring>=24"]
+
+[project.scripts]
+unicorn-studio = "unicorn_studio.app:main"
+
+[tool.setuptools]
+packages = ["unicorn_studio"]
+
+[tool.setuptools.package-data]
+unicorn_studio = ["data/*", "animations/**/*.json", "animations/*.md"]

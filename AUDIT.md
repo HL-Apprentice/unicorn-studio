@@ -52,6 +52,7 @@ reference), the whole **Movie** and **Sci-Fi** folders. When in doubt items were
 * x86_64 app runtime (built and signed universal; only run on Apple silicon).
 * `homeassistant/unicorn_agenda.yaml` was not loaded into a live Home Assistant.
 * Board MQTT over TLS (not supported by the firmware yet).
+* Linux app: see "Linux app 2.1.0" below (desktop simulation and Xvfb only; no hardware, no arm64 runtime).
 
 ## Before publishing (checklist)
 1. Rotate the broker password that existed in private notes (finding 1).
@@ -61,3 +62,22 @@ reference), the whole **Movie** and **Sci-Fi** folders. When in doubt items were
 5. Set your own git author (the root commit uses a neutral placeholder).
 
 23. **Refused playlist saves lost the app's id (fixed, us-2.1).** A rejected `playlist/save` (e.g. non-numeric speed) answered on result2 with an empty id, so the app could not match it and would have reported "board did not answer" after retries instead of the board's error. `playlist/save` now carries its id on errors too (fw_sim asserts it). Live-checked with a headless driver built on Core.swift: save→ok with id, confirmed in state.playlists, playlist/get round-trip matched the signature (incl. speed 15), bad speed refused with id, temp playlist deleted.
+
+### Linux app 2.1.0 (2026-10-31)
+Scope: everything under `linux-app/` (package, packaging, tests) and the release files
+`unicorn_studio-2.1.0-py3-none-any.whl`, `unicorn_studio-2.1.0.tar.gz`, `unicorn-studio-2.1.0-linux.tar.gz`.
+Method: code review, `tools/scan-secrets.sh`, and the app's tests against the real `firmware/main.py` (us-2.1)
+with simulated hardware and a private local Mosquitto, for all three boards.
+
+| # | Area | Finding | Sev. | Status |
+|---|------|---------|------|--------|
+| 24 | Network | No telemetry, update checks or crash reporting; the only connection is the user's MQTT broker. The only subprocess is `xdg-user-dir DOCUMENTS`. No `eval`/`exec`/`pickle`/YAML. Built-in MQTT 3.1.1 client (stdlib): TLS via `ssl.create_default_context()` (no "insecure" switch), packets over 1 MiB dropped. | - | **OK** |
+| 25 | Secrets | The password comes from `MQTT_PASSWORD`, the opt-in keyring, or a user-created chmod-600 `config.env` (or the CLI's). `settings.json` (mode 0600, written through an allowlist that drops unknown keys) never holds it; `--check-config` prints only set/not set; tests check it never appears in logs, window, settings or app output. | - | **OK** |
+| 26 | Input | Display files and images are untrusted: 32 MB, 256 px per side, 1000 frames; names `[a-z0-9_-]{1,24}`; uploads capped at 64 frames; retained state and `playlist/items` answers parsed defensively (items re-validated, max 32, seconds and speed clamped). | Low | **Fixed** (tested) |
+| 27 | Upload | v2 id per upload, per-frame acks with retry, one upload at a time, success only on `result2` with the same id and `ok`. Checked byte-for-byte on the simulated flash, from the Library and the Editor. | - | **OK** |
+| 28 | Playlists | Send publishes only `playlist/save` (mode, seconds, optional speed, a random id; never local file paths) and never uploads displays; success needs `playlist/result2` with that id **and** a fresh state listing the playlist. Missing displays are flagged and skipped by the board. Import uses `playlist/get`. | - | **OK** |
+| 29 | Live mirror | Raw RGB to `custom/live`, at most 4 updates a second, only when the canvas matches the board; nothing is stored on the board; an empty payload ends it. | Info | **OK** |
+| 30 | Packaging | The wheel ships only `unicorn_studio/` (code, `.desktop`, icon, optional bundled animations), no tests. The wheel and the Linux tar.gz are reproducible (`SOURCE_DATE_EPOCH`; built twice, identical); the sdist is not. Only dependency: PySide6-Essentials from PyPI (LGPLv3, not vendored). `--install-desktop` writes only to `~/.local/share`; nothing needs root. | Info | **OK** |
+| 31 | Tests | The test harness starts Mosquitto on 127.0.0.1 with a random port and password (passed in an environment variable, never printed). Simulated boards use locally administered MACs (`02:00:00:…`) and documentation IPs. `tests/board_sim.py`'s umqtt stand-in follows micropython-lib (`socket.socket()` + `getaddrinfo` through the module's `socket`, `connect(timeout=)`), so the firmware's socket-timeout shim (19) is exercised. | - | **OK** |
+| 32 | Repo tooling | The mock MAC in `tools/fw_sim.py` was close to a real device id and used a real vendor prefix. Now the locally administered `02:00:00:ab:c1:23`; `fw_sim.py` passes for all three boards. | Low | **Fixed** |
+| 33 | Testing | Tested in desktop simulation only, under Xvfb (X11) on Debian 13 x86_64 with PySide6 6.12.0. **Not tested:** real hardware (Galactic/Stellar not tested on hardware), Home Assistant's broker, TLS, the keyring, Wayland, arm64 at runtime, distros other than Debian, drawing with a real mouse (synthetic mouse events were used), the system colour dialog, live-mirror timing on hardware, GIF import (PNG tested), the us-2.0 fallbacks (unit-tested only), PySide6 6.8 with the 2.1.0 code. | Info | **Open** |

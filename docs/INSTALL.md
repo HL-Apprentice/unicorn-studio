@@ -51,3 +51,40 @@ Python 3.8+, standard library only.
 
 ## 4. Home Assistant (optional, for the agenda view)
 See [homeassistant/README.md](../homeassistant/README.md).
+
+## 5. Linux app
+1. Install pipx if you do not have it, for example `sudo apt install pipx` (Debian/Ubuntu) or
+   `sudo dnf install pipx` (Fedora).
+2. Download `unicorn-studio-2.1.0-linux.tar.gz` and `SHA256SUMS-linux.txt` from the release, check and install:
+   ```
+   sha256sum -c SHA256SUMS-linux.txt --ignore-missing
+   tar xzf unicorn-studio-2.1.0-linux.tar.gz && cd unicorn-studio-2.1.0-linux && ./install.sh
+   ```
+   `install.sh` runs `pipx install` on the wheel (or uses a venv in `~/.local/share/unicorn-studio` without pipx).
+   It needs no root and adds **Unicorn Studio** to your applications menu.
+3. Start the app, open **Settings…** and enter the broker host, port, MQTT user and password; tick TLS if your
+   broker uses it (usually port 8883).
+4. **Where the password is kept.** It is read from `MQTT_PASSWORD` in the environment, or from the system keyring
+   (optional: `pipx inject unicorn-studio keyring`, then tick **Remember password**), or from a config file you
+   create:
+   ```
+   mkdir -p ~/.config/unicorn-studio
+   cp config.env.example ~/.config/unicorn-studio/config.env
+   chmod 600 ~/.config/unicorn-studio/config.env      # then edit it
+   ```
+   The app also reads the CLI's `~/.config/unicorn/config.env`. `unicorn-studio --check-config` shows which settings
+   were found and prints only "set" or "not set" for the password. `settings.json` never holds the password.
+5. **Playlists.** Upload displays first (Library or Editor tab, **⬆ Upload to board**). Then in the Board tab use
+   **On the board → ＋ Add to playlist**, add built-in modes in the Playlists tab, set seconds and speed, type a
+   name, **Save**, **④ Send to board**, **⑤ ▶ Play on board**. Send transfers only the playlist; displays missing
+   from the board are flagged ⚠ and skipped by the board.
+6. **The library** lives in `~/Documents/Unicorn Displays` by default (your XDG Documents folder). Change it in
+   Settings or with `UNICORN_LIBRARY`.
+
+Requirements: Python 3.9+; glibc 2.28+ on x86_64 or 2.31+ on arm64 (PySide6 wheels); X11 or Wayland. On minimal
+installs Qt may also need `libegl1`, `libxkbcommon-x11-0` and `libxcb-cursor0`.
+
+Uninstall: `pipx uninstall unicorn-studio`, then `rm ~/.local/share/applications/unicorn-studio.desktop`.
+
+Build from source: `linux-app/packaging/build.sh` writes the wheel, the sdist, the Linux tar.gz and
+`SHA256SUMS-linux.txt` to `dist/`, bundling `animations/json` as the first-run library.

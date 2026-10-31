@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Unicorn Studio
+GenericName=LED matrix controller
+Comment=Control and upload animations to Pimoroni Cosmic, Galactic and Stellar Unicorn boards
+Exec=unicorn-studio
+Icon=unicorn-studio
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=unicorn;led;matrix;pimoroni;mqtt;pico;
+StartupWMClass=unicorn-studio
