@@ -1,0 +1,20 @@
+Unicorn Studio
+Copyright (c) 2026 Unicorn Studio contributors (see CONTRIBUTORS.md)
+
+Code (firmware/, mac-app/, linux-app/, cli/, tools/, homeassistant/): MIT License, see LICENSE.
+Animations and display assets (animations/): CC BY 4.0, see LICENSE-ASSETS and animations/LICENSE.md.
+
+Third-party material:
+* animations/json/Holiday/{reindeer_run,xmas_tree_twinkle,santa_walk} and their GIFs are derived from
+  "Holiday Expansion Set" by ZomBCool (in collaboration with jhanson9012), OpenGameArt,
+  https://opengameart.org/content/holiday-expansion-set, CC0 1.0.
+
+Provenance of the original animations:
+* The original animations, including UFO/alien_head (the blue alien with the starfield), were created
+  for this project by the contributors with AI assistance and procedural generation.
+  For alien_head, a public image was used only as a visual reference; no part of it was copied
+  or traced into the artwork. The image, its colouring and its animation frames are our own work.
+
+Runtime dependencies are not bundled except where noted in AUDIT.md (finding 14).
+"Cosmic Unicorn", "Galactic Unicorn" and "Stellar Unicorn" are Pimoroni product names.
+This project is not affiliated with Pimoroni.

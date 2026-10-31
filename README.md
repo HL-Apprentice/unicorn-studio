@@ -50,5 +50,12 @@ hardware. (Galactic/Stellar not tested on hardware.)
 * `tools/scan-secrets.sh` checks the working tree and git history for credentials and private data.
 
 ## License
-Code: MIT (see `LICENSE`). Animations: see `animations/CREDITS.md`.
+* **Code** (firmware, macOS app, Linux app, CLI, tools, Home Assistant files): MIT, see [`LICENSE`](LICENSE).
+* **Animations and display assets** (`animations/`): [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/),
+  see [`LICENSE-ASSETS`](LICENSE-ASSETS) and [`animations/LICENSE.md`](animations/LICENSE.md). Three holiday
+  animations are third-party CC0 1.0 works, credited in [`animations/CREDITS.md`](animations/CREDITS.md).
+* Provenance and third-party notices: [`NOTICE`](NOTICE).
+
+## Credits
+Made by HL-Apprentice with an AI assistant (code, firmware, animations). See [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
 Not affiliated with Pimoroni. "Cosmic/Galactic/Stellar Unicorn" are Pimoroni product names.

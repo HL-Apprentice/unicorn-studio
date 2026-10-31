@@ -13,7 +13,9 @@ https://opengameart.org/content/holiday-expansion-set (CC0 1.0). Re-drawn/re-tim
 Attribution is not legally required under CC0 but is given with thanks.
 
 ## Original works (CC BY 4.0, by Unicorn Studio contributors)
-Everything else in this folder was drawn or generated procedurally for this project:
+Everything else in this folder was created for this project by the contributors (with AI assistance,
+or generated procedurally). License text: `../LICENSE-ASSETS`; summary in `LICENSE.md`.
+`UFO/alien_head` is our own AI-assisted artwork and animation; a public image served only as a visual reference.
 
 * **Holiday:** bunny_hop, gift_pop, heart_beat, july4_fireworks, menorah_lighting, new_year_2027,
   shamrock_sparkle, snowman_snowfall, turkey_tail_fan, us_flag_wave

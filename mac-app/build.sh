@@ -25,6 +25,8 @@ mkdir -p "$C/MacOS" "$C/Resources"
 lipo -create "${bins[@]}" -output "$C/MacOS/UnicornStudio"
 if [ -d ../animations/json ]; then mkdir -p "$C/Resources/Animations"; cp -R ../animations/json/. "$C/Resources/Animations/"; fi
 [ -f AppIcon.icns ] && cp AppIcon.icns "$C/Resources/"
+for f in LICENSE LICENSE-ASSETS NOTICE CONTRIBUTORS.md; do [ -f "../$f" ] && cp "../$f" "$C/Resources/"; done
+[ -f ../animations/LICENSE.md ] && [ -d "$C/Resources/Animations" ] && cp ../animations/LICENSE.md ../animations/CREDITS.md "$C/Resources/Animations/"
 cat > "$C/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -39,6 +41,7 @@ cat > "$C/Info.plist" <<PL
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>$MIN_OS</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Unicorn Studio contributors. Code: MIT. Animations: CC BY 4.0.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
   <key>NSLocalNetworkUsageDescription</key><string>Unicorn Studio talks to your MQTT broker on your local network to send displays to your Unicorn board.</string>
 </dict></plist>
@@ -47,7 +50,7 @@ codesign --force --deep -o runtime -s - "$C/.."
 codesign --verify --strict "$C/.." && echo "signature ok (ad-hoc, hardened runtime)"
 lipo -info "$C/MacOS/UnicornStudio"
 Z="$D/Unicorn-Studio-$VERSION-macOS-$( [ "$ARCHS" = "arm64 x86_64" ] && echo universal || echo "${ARCHS// /-}").zip"
-rm -f "$Z"; ditto -c -k --keepParent "$B/$APP.app" "$Z"
+rm -f "$Z"; ditto -c -k --norsrc --noextattr --noqtn --keepParent "$B/$APP.app" "$Z"   # no AppleDouble ._ files
 (cd "$D" && shasum -a 256 "$(basename "$Z")") | tee "$Z.sha256"
 if [ "${INSTALL:-0}" = 1 ]; then
   DST="$HOME/Applications/$APP.app"

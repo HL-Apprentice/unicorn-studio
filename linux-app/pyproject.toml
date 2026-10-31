@@ -7,7 +7,7 @@ name = "unicorn-studio"
 version = "2.1.0"
 description = "Linux desktop app for Pimoroni Cosmic, Galactic and Stellar Unicorn boards running the Unicorn Studio firmware (MQTT)"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "MIT (code); CC-BY-4.0 (bundled animations, see LICENSE-ASSETS)" }
 authors = [{ name = "Unicorn Studio contributors" }]
 requires-python = ">=3.9"
 dependencies = ["PySide6-Essentials>=6.8"]

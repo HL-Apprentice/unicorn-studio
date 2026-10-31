@@ -25,8 +25,8 @@ Severity: High / Medium / Low / Info. Status: **Fixed**, **Open**, **Accepted**.
 | 12 | Mac app | Not sandboxed (reads files you open and the library folder, connects to your broker). Hardened runtime on; ad-hoc signed; not notarized (Gatekeeper right-click → Open). No entitlements requested. | Low | **Open / accepted**: sandboxing would need a Developer ID for a usable experience. |
 | 13 | Mac app | Ad-hoc signature changes with every build, so macOS may re-ask for Documents, Local Network or Keychain access after an update. Found during this audit: the app read the library in `~/Documents` on the main thread, so a pending Documents prompt froze the window and delayed the board connection. Library loading is now in the background. | Low | **Fixed** (freeze) / **Accepted** (re-prompts, documented) |
 | 14 | Licenses | Code MIT (`LICENSE`). Runtime deps: Pimoroni MicroPython incl. picographics/board modules (MIT), `umqtt.simple` (micropython-lib, MIT), Apple system frameworks, Python stdlib. Pimoroni's example effects (fire/rainbow/supercomputer) are **not** bundled; users copy them from Pimoroni (MIT). | - | **OK** |
-| 15 | Animations | Third-party: 3 items from OpenGameArt "Holiday Expansion Set" (ZomBCool, collab. jhanson9012), **CC0 1.0**, credited. Everything else is original, proposed **CC BY 4.0** (owner to confirm; CC0 or MIT also fine). | Info | **OK** |
-| 16 | Animations | **Provenance doubt: `UFO/alien_head`.** Original pixel work, recoloured blue with a starfield, but the reference image used during its creation is not recorded. Included at the owner's request; confirm it was not traced from a copyrighted image before publishing, or remove it. | Low | **Open**: owner decision |
+| 15 | Animations | Third-party: 3 items from OpenGameArt "Holiday Expansion Set" (ZomBCool, collab. jhanson9012), **CC0 1.0**, credited. Everything else is original, licensed **CC BY 4.0** (owner confirmed 2026-10-31): `LICENSE-ASSETS` (full legal text), `animations/LICENSE.md`, `NOTICE`. Code stays MIT. | Info | **Fixed** |
+| 16 | Animations | **Provenance: `UFO/alien_head`.** Owner confirmed 2026-10-31: the image and its animations were created by the contributors (AI-assisted); a public image was used only as a visual reference, not copied or traced. Recorded in `NOTICE` and `animations/CREDITS.md`. | Low | **Fixed** (owner confirmation) |
 | 17 | Animations | Excluded as fan art / third-party-derived (see below). The remaining UFO set and the Halloween icon set were generated procedurally. | - | **Fixed** (excluded) |
 | 18 | Process | The automated pre-publish gate referenced by the owner's policy is not wired into this environment; this audit + scanner is the substitute. Publishing needs explicit owner approval. | Info | **Open** |
 
@@ -56,10 +56,10 @@ reference), the whole **Movie** and **Sci-Fi** folders. When in doubt items were
 
 ## Before publishing (checklist)
 1. Rotate the broker password that existed in private notes (finding 1).
-2. Decide on `alien_head` (16) and the animation license (15).
+2. ~~Decide on `alien_head` (16) and the animation license (15).~~ Done 2026-10-31 (CC BY 4.0; provenance in `NOTICE`).
 3. Optionally run gitleaks/trufflehog (needs install approval).
 4. `tools/scan-secrets.sh <private-terms-file>` must print `RESULT: clean`.
-5. Set your own git author (the root commit uses a neutral placeholder).
+5. ~~Set your own git author.~~ Done 2026-10-31: history rewritten to `HL-Apprentice` with a GitHub noreply address.
 
 23. **Refused playlist saves lost the app's id (fixed, us-2.1).** A rejected `playlist/save` (e.g. non-numeric speed) answered on result2 with an empty id, so the app could not match it and would have reported "board did not answer" after retries instead of the board's error. `playlist/save` now carries its id on errors too (fw_sim asserts it). Live-checked with a headless driver built on Core.swift: save→ok with id, confirmed in state.playlists, playlist/get round-trip matched the signature (incl. speed 15), bad speed refused with id, temp playlist deleted.
 

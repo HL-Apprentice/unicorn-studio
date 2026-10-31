@@ -14,10 +14,13 @@ trap 'rm -rf "$WORK"' EXIT
 cp -R "$HERE" "$WORK/src"
 rm -rf "$WORK/src/tests" "$WORK/src/packaging" "$WORK/src/build" "$WORK/src"/*.egg-info "$WORK/src/unicorn_studio/animations"
 find "$WORK/src" -name __pycache__ -prune -exec rm -rf {} +
+for f in LICENSE LICENSE-ASSETS NOTICE; do [ -f "$REPO/$f" ] && cp "$REPO/$f" "$WORK/src/$f"; done
 if [ -d "$REPO/animations/json" ]; then
   mkdir -p "$WORK/src/unicorn_studio/animations"
   cp -R "$REPO/animations/json/." "$WORK/src/unicorn_studio/animations/"
   [ -f "$REPO/animations/CREDITS.md" ] && cp "$REPO/animations/CREDITS.md" "$WORK/src/unicorn_studio/animations/"
+  [ -f "$REPO/animations/LICENSE.md" ] && cp "$REPO/animations/LICENSE.md" "$WORK/src/unicorn_studio/animations/"
+  [ -f "$REPO/LICENSE-ASSETS" ] && cp "$REPO/LICENSE-ASSETS" "$WORK/src/unicorn_studio/animations/LICENSE-ASSETS.md"
   echo "bundling $(find "$WORK/src/unicorn_studio/animations" -name '*.json' | wc -l | tr -d ' ') animations"
 else
   echo "no animations/json next to linux-app: building without bundled animations"
@@ -31,7 +34,7 @@ mkdir -p "$PKG"
 cp "$WHL" "$PKG/"
 cp "$HERE/unicorn_studio/data/unicorn-studio.desktop" "$HERE/unicorn_studio/data/unicorn-studio.svg" "$HERE/config.env.example" "$PKG/"
 cp "$HERE/README.md" "$PKG/README.md"
-[ -f "$REPO/LICENSE" ] && cp "$REPO/LICENSE" "$PKG/"
+for f in LICENSE LICENSE-ASSETS NOTICE CONTRIBUTORS.md; do [ -f "$REPO/$f" ] && cp "$REPO/$f" "$PKG/"; done
 cat > "$PKG/install.sh" <<'EOS'
 #!/usr/bin/env bash
 # Installs Unicorn Studio for the current user with pipx (preferred) or a private venv. No root needed.
