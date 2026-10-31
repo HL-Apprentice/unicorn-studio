@@ -11,6 +11,14 @@ Base topic `B = unicorn/<id>` where `<id>` is the last 6 hex digits of the board
 | `B/rotation/set`, `B/text/set`, `B/speed/set`, `B/reboot/set`, `B/refresh/set` | → board | value; `refresh` republishes the state only (us-2.1: no discovery re-send, no settings write) |
 | `unicorn/agenda` | HA → all boards | retained JSON `{"now":epoch,"tz":utc_offset_s,"ev":[{"t":title,"s":start,"e":end,"c":0..2}]}` (max 16 events) |
 | `homeassistant/status` | HA → | `online` triggers re-discovery |
+| `homeassistant/<component>/unicorn_<id>/<entity>/config` | board → | retained HA discovery config (us-2.2), `<entity>` = `display`, `mode`, `rotation`, `text`, `speed`, `reboot`, `ip`, `uptime`, `playing` |
+
+**Discovery layout (us-2.2):** the node level is the board's MQTT client id `unicorn_<id>`, so a broker ACL can
+confine each board to its own topics (`pattern write homeassistant/+/%c/+/config`, see `SECURITY.md`). Entity
+unique ids and ids are unchanged (`unicorn_<id>`, `unicorn_<id>_mode`, …). Up to us-2.1 the topics were
+`homeassistant/<component>/unicorn_<id>[_<entity>]/config`; on its first connection us-2.2 publishes an empty
+retained payload to each of those (removing them from HA) and then writes the flag file `disc2.txt`, so this
+happens once.
 
 ## Custom display upload (v2)
 Names: 1-24 chars of `a-z 0-9 _ -`. Max 64 frames. Frames are exactly `W×H×3` bytes RGB, row-major, upright.
@@ -50,4 +58,5 @@ contains the name (the board can reboot between the two). Playlists never upload
 ## Signed file update (optional)
 Only if `OTA_KEY` is set in `secrets.py`. `B/ota/put` = `name\nseq\nhex(HMAC-SHA256(OTA_KEY, name+"\n"+seq+"\n"+body))\nbody`;
 `seq` must increase; `secrets.py`/`boot.py` can't be written; `main.py` is kept as `main_prev.py`.
+A new `main.py` runs at boot with full access, so `OTA_KEY` grants full control of the board (see `SECURITY.md`).
 Result on `B/ota/result`.

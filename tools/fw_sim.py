@@ -287,6 +287,23 @@ def run_board(board):
         assert ns["spd"]() == 6 and ns["st"]["speed"] == 6, "leaving the playlist restores the global speed"
         on_msg((B + "/playlist/delete").encode(), b"spd")
         print("  per-item speed: clamped 1..20, optional (old playlists unchanged), drives frame timing; global speed back after")
+        # us-2.2: discovery lives under homeassistant/<comp>/<DEV>/<key>/config so the broker ACL can be
+        # "pattern write homeassistant/+/%c/+/config"; the pre-2.2 topics are cleared once (flag file disc2.txt)
+        DEV = ns["DEV"]
+        keys = ["display", "mode", "rotation", "text", "speed", "reboot", "ip", "uptime", "playing"]
+        assert not os.path.exists("disc2.txt")
+        SIM["pubs"].clear(); ns["discovery"]()
+        cleared = [t for t, m in SIM["pubs"] if m == ""]
+        new = {t.split("/")[3]: json.loads(m) for t, m in SIM["pubs"] if m}
+        assert len(cleared) == len(keys) and all(
+            len(t.split("/")) == 4 and t.split("/")[2].startswith(DEV) for t in cleared), cleared
+        assert all(len(t.split("/")) == 5 and t.split("/")[2] == DEV and t.endswith("/config") for t, m in SIM["pubs"] if m)
+        assert sorted(new) == sorted(keys), sorted(new)
+        assert new["display"]["unique_id"] == DEV and new["mode"]["unique_id"] == DEV + "_mode", "unique ids unchanged"
+        assert os.path.exists("disc2.txt")
+        SIM["pubs"].clear(); ns["discovery"]()
+        assert not [t for t, m in SIM["pubs"] if m == ""] and len(SIM["pubs"]) == len(keys), "old topics cleared only once"
+        print("  discovery: per-device topics (ACL %c pattern), old topics cleared once, unique ids unchanged")
         # us-2.1: MQTT connect can no longer block forever (old and new umqtt connect signatures)
         class FakeSock:
             def __init__(self): self.to = None

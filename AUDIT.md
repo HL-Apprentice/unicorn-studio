@@ -81,3 +81,14 @@ with simulated hardware and a private local Mosquitto, for all three boards.
 | 31 | Tests | The test harness starts Mosquitto on 127.0.0.1 with a random port and password (passed in an environment variable, never printed). Simulated boards use locally administered MACs (`02:00:00:…`) and documentation IPs. `tests/board_sim.py`'s umqtt stand-in follows micropython-lib (`socket.socket()` + `getaddrinfo` through the module's `socket`, `connect(timeout=)`), so the firmware's socket-timeout shim (19) is exercised. | - | **OK** |
 | 32 | Repo tooling | The mock MAC in `tools/fw_sim.py` was close to a real device id and used a real vendor prefix. Now the locally administered `02:00:00:ab:c1:23`; `fw_sim.py` passes for all three boards. | Low | **Fixed** |
 | 33 | Testing | Tested in desktop simulation only, under Xvfb (X11) on Debian 13 x86_64 with PySide6 6.12.0. **Not tested:** real hardware (Galactic/Stellar not tested on hardware), Home Assistant's broker, TLS, the keyring, Wayland, arm64 at runtime, distros other than Debian, drawing with a real mouse (synthetic mouse events were used), the system colour dialog, live-mirror timing on hardware, GIF import (PNG tested), the us-2.0 fallbacks (unit-tested only), PySide6 6.8 with the 2.1.0 code. | Info | **Open** |
+
+### Public-repo review (2026-10-31, firmware us-2.2)
+Scope: the published repository, its history and the v2.1.0 release files. Method: code review,
+`tools/scan-secrets.sh` with the private terms, `tools/fw_sim.py` and `linux-app/tests/test_core.py`.
+
+| # | Area | Finding | Sev. | Status |
+|---|---|---|---|---|
+| 34 | Broker ACL | The suggested ACL let the board/app user write all of `homeassistant/#`, i.e. rewrite the discovery config of any Home Assistant device. us-2.2 publishes discovery under `homeassistant/<component>/unicorn_<id>/<entity>/config` (node = MQTT client id) and clears its old topics once (`disc2.txt`); the ACL is now `pattern write homeassistant/+/%c/+/config`. Unique ids and entity ids are unchanged. Checked in `fw_sim.py` for all three boards. | Medium | **Fixed** |
+| 35 | Docs | SECURITY.md said packets over 16 KiB are dropped (64 KiB with `OTA_KEY`) and that `secrets.py`/`boot.py` can never be replaced, without saying that a signed `main.py` runs with full access. Now states that `OTA_KEY` grants full control of the board. | Low | **Fixed** |
+| 36 | Privacy | The agenda package retains calendar titles on the broker (`unicorn/agenda`), readable by anyone with read on `unicorn/#`. | Info | **Documented** (SECURITY.md, homeassistant/README.md) |
+| 37 | Privacy | Commits carried a personal name and host name, and the credits named an AI assistant listed in the private terms. Authors are now `HL-Apprentice` (noreply); the assistant is credited generically. | Low | **Fixed** in the files; the name is still in the v2.1.0 commit and release files until that history is rewritten |

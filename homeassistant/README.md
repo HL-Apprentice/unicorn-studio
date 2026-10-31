@@ -28,7 +28,10 @@ With the MQTT integration set up, the board announces itself by MQTT discovery a
 `unicorn_agenda.yaml` is a package that reads up to three calendars every 5 minutes with
 `calendar.get_events` and publishes a retained `unicorn/agenda` message (also carrying the current UTC
 offset, so the board's clock follows DST). Edit the two `calendar.change_me_*` ids, then restart HA.
+Because the message is retained, the broker keeps your event titles; anyone allowed to read `unicorn/#` can
+see them (see `SECURITY.md`).
 
 ## Broker user
 Give the board its own non-admin MQTT user; see `SECURITY.md` for a Mosquitto ACL that limits it to
-`unicorn/#` and `homeassistant/#`.
+`unicorn/#` and to its own discovery topics (`homeassistant/<component>/unicorn_<id>/<entity>/config`, us-2.2).
+Flash us-2.2 before tightening the ACL so the board can clear its old discovery topics.

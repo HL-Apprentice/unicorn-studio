@@ -4,7 +4,7 @@
 import time, machine, network, gc, json, os, math, random
 import micropython
 
-VERSION = "us-2.1"
+VERSION = "us-2.2"
 
 # ---------- board auto-detect (each Pimoroni MicroPython build ships one board module) ----------
 try:
@@ -1160,13 +1160,29 @@ def discovery():
         ("sensor", "playing", {"name": "Playlist item", "state_topic": S_,
                                "value_template": "{{ value_json.playing or 'none' }}", "icon": "mdi:playlist-play"}),
     ]
+    # Topics are homeassistant/<comp>/<DEV>/<key>/config: DEV is also the MQTT client id, so the broker ACL
+    # can confine each board to its own discovery topics (pattern write homeassistant/+/%c/+/config).
+    # Up to us-2.1 they were homeassistant/<comp>/<oid>/config: clear those once so HA has no duplicates.
+    try:
+        os.stat("disc2.txt")
+        old = False
+    except OSError:
+        old = True
     for comp, key, cfg in ents:
         oid = DEV + ("_" + key if key else "")
         cfg["unique_id"] = oid
         cfg["default_entity_id"] = comp + "." + oid
         cfg["availability_topic"] = av
         cfg["device"] = dev
-        pub("homeassistant/%s/%s/config" % (comp, oid), json.dumps(cfg), True)
+        if old:
+            pub("homeassistant/%s/%s/config" % (comp, oid), "", True)
+        pub("homeassistant/%s/%s/%s/config" % (comp, DEV, key or "display"), json.dumps(cfg), True)
+    if old:
+        try:
+            with open("disc2.txt", "w") as f:
+                f.write("1")
+        except OSError:
+            pass
 
 # ---- signed Wi-Fi file update (disabled unless OTA_KEY is set in secrets.py) ----
 # payload: name \n seq \n hex(HMAC-SHA256(OTA_KEY, name + "\n" + seq + "\n" + body)) \n body
