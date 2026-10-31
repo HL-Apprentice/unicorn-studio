@@ -1,0 +1,43 @@
+# Unicorn Studio - Home Assistant package: publish your calendars to the board's "agenda" mode.
+# Install: put this file in /config/packages/ and add to configuration.yaml:
+#   homeassistant:
+#     packages: !include_dir_named packages
+# Replace the calendar entity ids below (up to 3; the order sets the colour dot: pink, blue, green).
+# Calendar data stays on your LAN: HA -> your MQTT broker -> board. Titles are cut to 40 characters.
+automation:
+  - id: unicorn_agenda_publish
+    alias: "Unicorn: publish agenda"
+    mode: restart
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: "/5"
+    variables:
+      cals:
+        - calendar.change_me_first
+        - calendar.change_me_second
+    actions:
+      - action: calendar.get_events
+        target:
+          entity_id: "{{ cals }}"
+        data:
+          duration:
+            hours: 36
+        response_variable: cal
+      - variables:
+          ev: >-
+            {% set ns = namespace(ev=[]) %}
+            {% for c in cals %}{% set ci = loop.index0 %}
+              {% for e in (cal[c].events if c in cal else []) %}
+                {% set ns.ev = ns.ev + [{"t": (e.summary | default(''))[:40], "s": as_timestamp(e.start) | int,
+                                         "e": as_timestamp(e.end) | int, "c": ci % 3}] %}
+              {% endfor %}
+            {% endfor %}
+            {{ (ns.ev | sort(attribute='s'))[:16] }}
+      - action: mqtt.publish
+        data:
+          topic: unicorn/agenda
+          retain: true
+          payload: >-
+            {{ {"now": now().timestamp() | int, "tz": now().utcoffset().total_seconds() | int, "ev": ev} | to_json }}

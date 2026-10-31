@@ -1,0 +1,17 @@
+# local configuration and credentials - never commit
+secrets.py
+!firmware/secrets.example.py
+config.env
+*.env
+!*.env.example
+# build output
+mac-app/build/
+mac-app/dist/
+dist/
+*.zip
+*.sha256
+# backups / scratch
+backup-*/
+*.bak*
+.DS_Store
+__pycache__/

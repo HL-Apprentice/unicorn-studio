@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""unicorn - control a Pimoroni Cosmic / Galactic / Stellar Unicorn running Unicorn Studio firmware (local MQTT).
+
+  unicorn status                     board, firmware, mode, what is playing, displays and playlists
+  unicorn on | off
+  unicorn brightness <0-100>
+  unicorn mode <name>                clock today agenda scroll_text starfield matrix plasma life
+                                     (fire rainbow supercomputer if installed) custom:<name> playlist:<name>
+  unicorn text "<message>"           scroll a message
+  unicorn rotation <0|90|180|270>    square boards; Galactic: 0|180
+  unicorn color <r g b | #rrggbb | name>
+  unicorn speed <1-20>
+  unicorn reboot
+  unicorn watch                      print state changes until Ctrl-C
+  unicorn show <display.json|name> [--fit|--fill|--stretch] [--no-play]
+                                     upload a display (resized to the board) and play it;
+                                     GIFs: import them in Unicorn Studio first
+  unicorn customs                    list displays stored on the board
+  unicorn delete-custom <name>
+  unicorn playlist list
+  unicorn playlist set <name> <item>=<seconds> ...   item: clock, agenda, today/date, custom:<name> or a .json path
+                                     (displays missing on the board are uploaded first)
+  unicorn playlist play <name>
+  unicorn playlist delete <name>
+  unicorn push <file.py>             update a file on the board: signed over Wi-Fi if OTA_KEY is set, else USB
+  unicorn boards                     list boards seen on the broker
+
+Configuration (never on the command line): $UNICORN_CONFIG or ~/.config/unicorn/config.env
+  MQTT_BROKER=...  MQTT_PORT=1883  MQTT_USER=...  MQTT_PASSWORD=...  UNICORN_ID=<6 hex from the board topic>
+  optional: MQTT_TLS=1, OTA_KEY=..., UNICORN_USB=/dev/cu.usbmodem..., SECRETS_FILE=<another file to read>
+"""
+import glob, hashlib, hmac, json, os, socket, ssl, struct, subprocess, sys, time, uuid
+
+CONFIG = os.environ.get("UNICORN_CONFIG") or os.path.expanduser("~/.config/unicorn/config.env")
+COLORS = {"white": (255, 255, 255), "warm": (255, 180, 90), "red": (255, 0, 0), "green": (0, 255, 0),
+          "blue": (0, 80, 255), "purple": (160, 0, 255), "pink": (255, 60, 160), "orange": (255, 110, 0),
+          "yellow": (255, 220, 0), "cyan": (0, 220, 255)}
+BUILTINS = ["clock", "today", "agenda", "scroll_text", "fire", "rainbow", "supercomputer", "starfield", "matrix", "plasma", "life"]
+LIBRARY = os.environ.get("UNICORN_LIBRARY") or os.path.expanduser("~/Documents/Unicorn Displays")
+
+
+def read_env(path, out, depth=0):
+    try:
+        f = open(os.path.expanduser(path))
+    except OSError:
+        return out
+    with f:
+        for line in f:
+            line = line.strip()
+            if "=" not in line or line.startswith("#"):
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.replace("export ", "").strip(), v.strip()
+            if len(v) > 1 and v[0] == v[-1] and v[0] in "'\"":
+                v = v[1:-1]
+            if k == "SECRETS_FILE" and depth < 3:
+                read_env(v, out, depth + 1)
+            elif k not in out:
+                out[k] = v
+    return out
+
+
+CFG = read_env(CONFIG, {})
+DEV = os.environ.get("UNICORN_ID") or CFG.get("UNICORN_ID", "")
+BASE = DEV if DEV.startswith("unicorn/") else ("unicorn/" + DEV if DEV else "")
+
+
+def need(*keys):
+    miss = [k for k in keys if not CFG.get(k)]
+    if miss:
+        sys.exit("missing %s in %s (see unicorn help)" % (", ".join(miss), CONFIG))
+
+
+# ---- tiny MQTT 3.1.1 client (QoS 0) ----
+def _s(x):
+    b = x.encode() if isinstance(x, str) else x
+    return struct.pack("!H", len(b)) + b
+
+
+def _pkt(h, body):
+    n, rl = len(body), b""
+    while True:
+        d = n % 128
+        n //= 128
+        rl += bytes([d | (0x80 if n else 0)])
+        if not n:
+            break
+    return bytes([h]) + rl + body
+
+
+class MQ:
+    MAXPKT = 1 << 20
+
+    def __init__(self, timeout=5):
+        need("MQTT_BROKER", "MQTT_USER", "MQTT_PASSWORD")
+        host, port = CFG["MQTT_BROKER"], int(CFG.get("MQTT_PORT", 8883 if CFG.get("MQTT_TLS") == "1" else 1883))
+        s = socket.create_connection((host, port), timeout)
+        if CFG.get("MQTT_TLS") == "1":
+            s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
+        self.s = s
+        body = _s("MQTT") + b"\x04\xc2" + struct.pack("!H", 60) + _s("unicorn-cli-%d" % os.getpid()) \
+            + _s(CFG["MQTT_USER"]) + _s(CFG["MQTT_PASSWORD"])
+        self.s.sendall(_pkt(0x10, body))
+        h, b = self.read()
+        if h >> 4 != 2 or len(b) < 2 or b[1] != 0:
+            raise RuntimeError("MQTT login refused (rc=%s)" % (b[1] if len(b) > 1 else "?"))
+
+    def _rx(self, n):
+        out = b""
+        while len(out) < n:
+            c = self.s.recv(n - len(out))
+            if not c:
+                raise ConnectionError("closed")
+            out += c
+        return out
+
+    def read(self):
+        h = self._rx(1)[0]
+        m, n = 1, 0
+        for _ in range(4):
+            d = self._rx(1)[0]
+            n += (d & 127) * m
+            m *= 128
+            if not d & 128:
+                break
+        else:
+            raise ConnectionError("bad packet length")
+        if n > self.MAXPKT:
+            raise ConnectionError("packet too large")
+        return h, self._rx(n)
+
+    def pub(self, topic, payload, retain=False):
+        if isinstance(payload, str):
+            payload = payload.encode()
+        self.s.sendall(_pkt(0x30 | (1 if retain else 0), _s(topic) + payload))
+
+    def sub(self, *topics):
+        body = struct.pack("!H", 1) + b"".join(_s(t) + b"\x00" for t in topics)
+        self.s.sendall(_pkt(0x82, body))
+
+    def messages(self, seconds):
+        end = time.time() + seconds
+        while time.time() < end:
+            self.s.settimeout(max(0.05, end - time.time()))
+            try:
+                h, b = self.read()
+            except socket.timeout:
+                return
+            if h >> 4 == 3 and len(b) >= 2:
+                tl = struct.unpack("!H", b[:2])[0]
+                yield b[2:2 + tl].decode("utf-8", "replace"), b[2 + tl + (2 if h & 6 else 0):]
+
+    def close(self):
+        try:
+            self.s.sendall(b"\xe0\x00")
+            self.s.close()
+        except OSError:
+            pass
+
+
+def need_base():
+    if not BASE:
+        sys.exit("set UNICORN_ID in %s (run 'unicorn boards' to find it)" % CONFIG)
+
+
+def get_state(mq, fresh=True):
+    need_base()
+    mq.sub(BASE + "/state", BASE + "/status")
+    if fresh:
+        mq.pub(BASE + "/refresh/set", "1")
+    st, av = None, None
+    for t, p in mq.messages(4):
+        if t.endswith("/state"):
+            try:
+                st = json.loads(p)
+            except ValueError:
+                continue
+        elif t.endswith("/status"):
+            av = p.decode()
+        if st is not None and av is not None and (not fresh or st.get("uptime") is not None):
+            break
+    return st, av
+
+
+# ---- displays ----
+def resample(px, sw, sh, W, H, mode="fit"):
+    """px: list of (r,g,b). Area-averaged resize; fit = letterbox, fill = crop, stretch = distort."""
+    if (sw, sh) == (W, H):
+        return px
+    sx, sy = W / sw, H / sh
+    if mode == "fit":
+        sx = sy = min(sx, sy)
+    elif mode == "fill":
+        sx = sy = max(sx, sy)
+    ox, oy = (W - sw * sx) / 2, (H - sh * sy) / 2
+    out = []
+    for y in range(H):
+        y0, y1 = (y - oy) / sy, (y + 1 - oy) / sy
+        for x in range(W):
+            x0, x1 = (x - ox) / sx, (x + 1 - ox) / sx
+            r = g = b = wsum = 0.0
+            for yy in range(max(0, int(y0)), min(sh, int(y1 - 1e-9) + 1)):
+                wy = min(y1, yy + 1) - max(y0, yy)
+                if wy <= 0:
+                    continue
+                for xx in range(max(0, int(x0)), min(sw, int(x1 - 1e-9) + 1)):
+                    wx = min(x1, xx + 1) - max(x0, xx)
+                    if wx <= 0:
+                        continue
+                    c = px[yy * sw + xx]
+                    w = wx * wy
+                    r += c[0] * w; g += c[1] * w; b += c[2] * w; wsum += w
+            if wsum <= 0 or wsum / ((x1 - x0) * (y1 - y0)) < 0.5:
+                out.append((0, 0, 0))
+            else:
+                out.append((min(255, int(r / wsum + .5)), min(255, int(g / wsum + .5)), min(255, int(b / wsum + .5))))
+    return out
+
+
+def board_name(raw):
+    return "".join(c if c in "abcdefghijklmnopqrstuvwxyz0123456789_-" else "_" for c in raw.lower())[:24] or "display"
+
+
+def find_display(path):
+    if os.path.exists(path):
+        return path
+    for p in glob.glob(os.path.join(LIBRARY, "**", path + ".json"), recursive=True):
+        return p
+    sys.exit("no such display: " + path)
+
+
+def load_display(path, W, H, mode="fit"):
+    """-> (board name, durations, [RGB frame bytes at W x H])"""
+    path = find_display(path)
+    if os.path.getsize(path) > 32 << 20:
+        sys.exit("file too large")
+    if path.lower().endswith((".gif", ".png", ".jpg", ".jpeg")):
+        sys.exit("convert images with Unicorn Studio (Import…) first; the CLI reads display JSON")
+    d = json.load(open(path))
+    w, h = int(d.get("width", 32)), int(d.get("height", 32))
+    if not (0 < w <= 256 and 0 < h <= 256) or not isinstance(d.get("frames"), list) or not d["frames"]:
+        sys.exit("not a display JSON")
+    pal = {k: bytes.fromhex(v.lstrip("#")[:6]) for k, v in d.get("palette", {}).items()}
+    durs, frames = [], []
+    for fr in d["frames"][:64]:
+        if "rows" in fr:
+            raw = b"".join(pal.get(ch, b"\0\0\0") for row in fr["rows"][:h] for ch in row.ljust(w, ".")[:w])
+        else:
+            v = fr.get("pixels", fr.get("hex", ""))
+            if isinstance(v, list):
+                v = "".join(str(x).lstrip("#")[:6].rjust(6, "0") for x in v)
+            raw = bytes.fromhex("".join(c for c in v if c in "0123456789abcdefABCDEF"))
+        if len(raw) < w * h * 3:
+            raw = raw + bytes(w * h * 3 - len(raw))
+        px = [tuple(raw[i * 3:i * 3 + 3]) for i in range(w * h)]
+        px = resample(px, w, h, W, H, mode)
+        frames.append(bytes(v for c in px for v in c))
+        durs.append(max(20, min(60000, int(fr.get("duration_ms", 200)))))
+    if len(d["frames"]) > 64:
+        print("note: the board keeps at most 64 frames; using the first 64")
+    return board_name(d.get("name") or os.path.splitext(os.path.basename(path))[0]), durs, frames
+
+
+def upload(mq, st, name, durs, frames, play=True):
+    """True only when the board confirms the final save."""
+    v2 = str(st.get("version", "")).startswith("us-")
+    uid = uuid.uuid4().hex[:8] if v2 else ""
+    mq.sub(BASE + "/custom/result", BASE + "/custom/result2", BASE + "/custom/ack")
+    list(mq.messages(0.3))
+    begin = {"name": name, "durations": durs}
+    if v2:
+        begin.update(id=uid, width=st.get("width", 32), height=st.get("height", 32))
+    mq.pub(BASE + "/custom/begin", json.dumps(begin))
+
+    def result(t, p):
+        if v2 and t.endswith("/custom/result2"):
+            try:
+                j = json.loads(p)
+            except ValueError:
+                return None
+            return (j.get("ok"), j.get("msg")) if j.get("id") == uid else None
+        if not v2 and t.endswith("/custom/result"):
+            s = p.decode()
+            return s.startswith("ok "), s
+        return None
+
+    for i, fr in enumerate(frames):
+        want = ("%s:%d" % (uid, i + 1)) if v2 else str(i + 1)
+        ok = False
+        for attempt in range(4 if v2 else 1):
+            for c in range((len(fr) + 1023) // 1024):
+                hdr = (bytes([0xA5, len(uid)]) + uid.encode()) if v2 else b""
+                mq.pub(BASE + "/custom/frame", hdr + bytes([i >> 8, i & 255, c]) + fr[c * 1024:(c + 1) * 1024])
+            for t, p in mq.messages(6 if attempt == 0 else 4):
+                r = result(t, p)
+                if r:
+                    print("board:", r[1]); return False
+                if t.endswith("/custom/ack") and p.decode() == want:
+                    ok = True; break
+            if ok:
+                break
+        if not ok:
+            print("board did not confirm frame %d; nothing saved" % (i + 1)); return False
+    mq.pub(BASE + "/custom/end", json.dumps({"name": name, "id": uid, "play": play}) if v2 else name)
+    for t, p in mq.messages(20):
+        r = result(t, p)
+        if r:
+            print("board:", r[1]); return bool(r[0])
+    print("no final answer from the board within 20 s"); return False
+
+
+def color_arg(a):
+    if len(a) == 3:
+        return [max(0, min(255, int(x))) for x in a]
+    v = a[0].lower() if a else ""
+    if v.startswith("#") and len(v) == 7:
+        return [int(v[i:i + 2], 16) for i in (1, 3, 5)]
+    if v in COLORS:
+        return list(COLORS[v])
+    sys.exit("color: give r g b, #rrggbb, or one of " + ", ".join(COLORS))
+
+
+def usb_port():
+    p = os.environ.get("UNICORN_USB") or CFG.get("UNICORN_USB")
+    if p:
+        return p
+    c = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))
+    if not c:
+        sys.exit("no board on USB")
+    return c[0]
+
+
+def push(path):
+    name = os.path.basename(path)
+    key = CFG.get("OTA_KEY")
+    if key:
+        mq = MQ()
+        mq.sub(BASE + "/ota/result")
+        list(mq.messages(0.3))
+        body = open(path, "rb").read()
+        seq = str(int(time.time()))
+        sig = hmac.new(key.encode(), name.encode() + b"\n" + seq.encode() + b"\n" + body, hashlib.sha256).hexdigest()
+        mq.pub(BASE + "/ota/put", name.encode() + b"\n" + seq.encode() + b"\n" + sig.encode() + b"\n" + body)
+        for t, p in mq.messages(20):
+            print("board:", p.decode()); break
+        else:
+            print("no answer from the board within 20 s")
+        mq.close()
+        print("Run 'unicorn reboot' to load it.")
+        return
+    r = subprocess.run(["mpremote", "connect", usb_port(), "cp", path, ":" + name, "+", "reset"], capture_output=True, text=True, timeout=120)
+    print("USB:", (r.stdout + r.stderr).strip() or "done")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__); return
+    cmd, a = argv[0], argv[1:]
+    simple = {
+        "on": lambda: ("light/set", json.dumps({"state": "ON"})),
+        "off": lambda: ("light/set", json.dumps({"state": "OFF"})),
+        "brightness": lambda: ("light/set", json.dumps({"state": "ON", "brightness": round(max(0, min(100, float(a[0]))) * 2.55)})),
+        "mode": lambda: ("mode/set", a[0]),
+        "text": lambda: ("text/set", " ".join(a)[:255]),
+        "rotation": lambda: ("rotation/set", a[0]),
+        "color": lambda: ("light/set", json.dumps({"color": dict(zip("rgb", color_arg(a)))})),
+        "speed": lambda: ("speed/set", str(max(1, min(20, int(a[0]))))),
+        "reboot": lambda: ("reboot/set", "PRESS"),
+    }
+    if cmd == "push":
+        push(a[0]); return
+    mq = MQ()
+    try:
+        if cmd == "boards":
+            mq.sub("unicorn/+/state")
+            seen = {}
+            for t, p in mq.messages(3):
+                try:
+                    j = json.loads(p)
+                except ValueError:
+                    continue
+                seen[t.split("/")[1]] = "%s %sx%s fw %s" % (j.get("board", "cosmic"), j.get("width", 32), j.get("height", 32), j.get("version"))
+            print("\n".join("%s  %s" % kv for kv in sorted(seen.items())) or "no boards seen")
+            return
+        need_base()
+        if cmd in simple:
+            t, p = simple[cmd]()
+            mq.pub(BASE + "/" + t, p)
+            time.sleep(0.5)
+            if cmd == "reboot":
+                print("reboot sent"); return
+            cmd = "status"
+        if cmd == "watch":
+            mq.sub(BASE + "/state", BASE + "/status")
+            try:
+                while True:
+                    for t, p in mq.messages(5):
+                        print(time.strftime("%H:%M:%S"), t.split("/")[-1], p.decode("utf-8", "replace"))
+            except KeyboardInterrupt:
+                pass
+            return
+        st, av = get_state(mq)
+        if st is None:
+            sys.exit("no state from the board (availability: %s)" % av)
+        if cmd == "status":
+            print("%s %sx%s (%s, %s)  fw %s  uptime %ss  time synced %s" % (st.get("board", "cosmic"), st.get("width", 32), st.get("height", 32),
+                  BASE, av, st.get("version"), st.get("uptime"), st.get("time_synced")))
+            print("  power %s  brightness %d%%  mode %s%s  rotation %s  speed %s" % (st["state"], round(st["brightness"] / 2.55), st["mode"],
+                  ("  (now: %s)" % st["playing"]) if st.get("playing") else "", st["rotation"], st["speed"]))
+            print("  displays: %s" % (", ".join(st.get("customs", [])) or "-"))
+            print("  playlists: %s" % (", ".join(st.get("playlists", [])) or "-"))
+            if st.get("reset_reason"):
+                print("  last reset: %s" % st["reset_reason"])
+        elif cmd == "customs":
+            print("\n".join(st.get("customs", [])) or "(none)")
+        elif cmd == "delete-custom":
+            mq.sub(BASE + "/custom/result")
+            list(mq.messages(0.3))
+            mq.pub(BASE + "/custom/delete", a[0])
+            for t, p in mq.messages(5):
+                print("board:", p.decode()); break
+        elif cmd == "show":
+            mode = "fill" if "--fill" in a else "stretch" if "--stretch" in a else "fit"
+            files = [x for x in a if not x.startswith("--")]
+            name, durs, frames = load_display(files[0], st.get("width", 32), st.get("height", 32), mode)
+            sys.exit(0 if upload(mq, st, name, durs, frames, play="--no-play" not in a) else 1)
+        elif cmd == "playlist":
+            sub = a[0] if a else "list"
+            if sub == "list":
+                print("\n".join(st.get("playlists", [])) or "(none)")
+                if str(st.get("mode", "")).startswith("playlist:"):
+                    print("playing %s, now showing %s" % (st["mode"][9:], st.get("playing")))
+            elif sub == "set":
+                name, items = board_name(a[1]), []
+                for spec in a[2:]:
+                    m, _, secs = spec.rpartition("=")
+                    if not m:
+                        m, secs = secs, "10"
+                    if m.endswith(".json") or (not m.startswith("custom:") and m not in (st.get("modes") or BUILTINS) and m != "date"):
+                        n, durs, frames = load_display(m, st.get("width", 32), st.get("height", 32))
+                        if n not in st.get("customs", []):
+                            print("uploading %s…" % n)
+                            if not upload(mq, st, n, durs, frames, play=False):
+                                sys.exit("upload of %s failed" % n)
+                            st.setdefault("customs", []).append(n)
+                        m = "custom:" + n
+                    items.append({"mode": m, "seconds": max(2, min(3600, int(secs)))})
+                mq.sub(BASE + "/playlist/result")
+                list(mq.messages(0.3))
+                mq.pub(BASE + "/playlist/save", json.dumps({"name": name, "items": items}))
+                for t, p in mq.messages(5):
+                    print("board:", p.decode()); break
+            elif sub == "play":
+                mq.pub(BASE + "/mode/set", "playlist:" + a[1]); time.sleep(0.5); print("playing playlist:" + a[1])
+            elif sub == "delete":
+                mq.sub(BASE + "/playlist/result")
+                list(mq.messages(0.3))
+                mq.pub(BASE + "/playlist/delete", a[1])
+                for t, p in mq.messages(5):
+                    print("board:", p.decode()); break
+            else:
+                sys.exit("playlist list | set <name> <item>=<s>... | play <name> | delete <name>")
+        else:
+            sys.exit("unknown command; try: unicorn help")
+    finally:
+        mq.close()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
