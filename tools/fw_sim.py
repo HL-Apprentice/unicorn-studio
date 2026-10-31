@@ -239,6 +239,101 @@ def run_board(board):
         ns["ota"](b"t.py\n6\n" + sig + b"\n" + body); assert "signature" in SIM["pubs"][-1][1]
         ns["ota"](b"secrets.py\n9\n" + ns["_hex"](ns["_hmac"]("k" * 32, b"secrets.py\n9\nx")).encode() + b"\nx"); assert "bad name" in SIM["pubs"][-1][1]
         print("  OTA: off by default; HMAC matches Python hmac; replay, bad sig, secrets.py all refused")
+        # us-2.1: playlist save carries the app's id; playlist/get lets the app import a board-only playlist
+        SIM["pubs"].clear()
+        on_msg((B + "/playlist/save").encode(), json.dumps({"name": "pl2", "id": "q7", "items": [{"mode": "clock", "seconds": 5}, {"mode": "custom:alien_head", "seconds": 9}]}).encode())
+        r = results()[-1]; assert r["ok"] and r["id"] == "q7" and r["msg"] == "ok playlist pl2 2 items", r
+        assert ns["pub_due"] is True
+        SIM["pubs"].clear(); on_msg((B + "/playlist/get").encode(), b"pl2")
+        got = [json.loads(m) for t, m in SIM["pubs"] if t.endswith("/playlist/items")][-1]
+        assert got == {"name": "pl2", "items": [{"mode": "clock", "seconds": 5}, {"mode": "custom:alien_head", "seconds": 9}]}, got
+        SIM["pubs"].clear(); on_msg((B + "/playlist/get").encode(), b"nope")
+        got = [json.loads(m) for t, m in SIM["pubs"] if t.endswith("/playlist/items")][-1]; assert got.get("error"), got
+        SIM["pubs"].clear(); on_msg((B + "/playlist/get").encode(), b"../x"); assert not results()[-1]["ok"]
+        on_msg((B + "/playlist/items").encode(), b'{"name":"x"}')      # our own answer echoing back: ignored
+        ns["need_disc"] = False; ns["pub_due"] = False; d0 = ns["dirty_t"]; on_msg((B + "/refresh/set").encode(), b"1")
+        assert ns["need_disc"] is False and ns["pub_due"] is True and ns["dirty_t"] == d0, "refresh: state only (no discovery, no settings write)"
+        print("  playlist save id echoed; playlist/get returns items / error; refresh no longer triggers discovery")
+        # us-2.1: per-item speed (1..20, 10 = the display's own timing); absent = the global speed
+        assert upload("sp_a", frames(10, 9), uid="s1", play=False)["ok"]
+        SIM["pubs"].clear()
+        on_msg((B + "/playlist/save").encode(), json.dumps({"name": "spd", "items": [
+            {"mode": "custom:sp_a", "seconds": 5, "speed": 10}, {"mode": "starfield", "seconds": 5, "speed": 99},
+            {"mode": "clock", "seconds": 5, "speed": 0}, {"mode": "custom:sp_a", "seconds": 5}]}).encode())
+        assert results()[-1]["ok"], results()[-1]
+        SIM["pubs"].clear(); on_msg((B + "/playlist/get").encode(), b"spd")
+        got = [json.loads(m) for t, m in SIM["pubs"] if t.endswith("/playlist/items")][-1]["items"]
+        assert [i.get("speed") for i in got] == [10, 20, 1, None], got
+        SIM["pubs"].clear()
+        on_msg((B + "/playlist/save").encode(), b'{"name":"bad","id":"e1","items":[{"mode":"clock","speed":"fast"}]}')
+        r = results()[-1]; assert r["id"] == "e1" and not r["ok"], r          # the refusal carries the app's id
+        assert "bad" not in ns["playlists"]()
+        ns["st"]["speed"] = 6
+        on_msg((B + "/mode/set").encode(), b"playlist:spd")
+        sp = []
+        for k in range(4):
+            sp.append(ns["spd"]())
+            if k == 0:     # frame timing at item speed 10: 100 ms frames advance after 100 ms, not 166
+                c = ns["cust"]; c[3] = ns["time"].ticks_ms(); i0 = c[2]
+                SIM["skew"] += 110; ns["draw_custom"](); assert ns["cust"][2] == (i0 + 1) % 10, "item speed 10 = own timing"
+            if k == 3:     # no item speed: global 6 -> 166 ms frames, so not yet advanced after 110 ms
+                c = ns["cust"]; c[3] = ns["time"].ticks_ms(); i0 = c[2]
+                SIM["skew"] += 110; ns["draw_custom"](); assert ns["cust"][2] == i0, "no item speed: global speed timing"
+                assert json.loads(ns["state_json"]())["speed_now"] == 6
+            for _ in range(2): ns["draw_mode"](); ns["show"]()
+            SIM["skew"] += 5001; ns["pl_tick"](ns["time"].ticks_ms())
+        assert sp == [10, 20, 1, 6], sp
+        on_msg((B + "/mode/set").encode(), b"clock")
+        assert ns["spd"]() == 6 and ns["st"]["speed"] == 6, "leaving the playlist restores the global speed"
+        on_msg((B + "/playlist/delete").encode(), b"spd")
+        print("  per-item speed: clamped 1..20, optional (old playlists unchanged), drives frame timing; global speed back after")
+        # us-2.1: MQTT connect can no longer block forever (old and new umqtt connect signatures)
+        class FakeSock:
+            def __init__(self): self.to = None
+            def settimeout(self, t): self.to = t
+            def close(self): pass
+        class FakeSockMod:
+            @staticmethod
+            def socket(*a): return FakeSock()
+            @staticmethod
+            def getaddrinfo(h, p): return [(0, 0, 0, "", (h, p))]
+        made = []
+        def make_umqtt(new_sig):
+            um = types.ModuleType("umqtt.simple"); um.socket = FakeSockMod
+            class C:
+                def __init__(self, *a, **k): self.sock = None
+                def set_last_will(self, *a, **k): pass
+                def set_callback(self, f): pass
+                def _go(self, timeout):
+                    self.sock = um.socket.socket()
+                    if new_sig: self.sock.settimeout(timeout)
+                    made.append(self.sock.to)
+                    if self.sock.to is None: raise AssertionError("connect would block forever")
+                    raise OSError(110)        # broker unreachable: times out
+            if new_sig:
+                def connect(self, clean_session=True, timeout=None): self._go(timeout)
+            else:
+                def connect(self, clean_session=True): self._go(None)
+            C.connect = connect; um.MQTTClient = C
+            pk = types.ModuleType("umqtt"); pk.simple = um
+            sys.modules["umqtt"] = pk; sys.modules["umqtt.simple"] = um
+        for new_sig in (False, True):
+            make_umqtt(new_sig)
+            try: ns["mq_connect"](); raise AssertionError("expected timeout")
+            except OSError: pass
+        assert made == [6, 6], made
+        class WL:
+            disc = 0
+            def isconnected(self): return True
+            def disconnect(self): WL.disc += 1
+            def ifconfig(self): return ("203.0.113.9",)
+        ns["wlan"] = WL(); ns["SSID"] = "x"; ns["BROKER"] = "203.0.113.1"; ns["MUSER"] = "u"; ns["TIME_HOST"] = ""; ns["NTP_HOST"] = ""
+        ns["mq"] = None; ns["mq_t"] = None; ns["mq_fail"] = 0
+        for i in range(4):
+            SIM["skew"] += 10001; ns["net_tick"](ns["time"].ticks_ms())
+        assert WL.disc == 1 and ns["mq_fail"] == 0 and ns["wifi_t"] is None, (WL.disc, ns["mq_fail"])
+        ns["mq"] = FakeMQ()
+        print("  MQTT connect has a 6 s timeout (old + new umqtt); 4 failed connects restart Wi-Fi instead of a watchdog reset")
         print("  PASS", board)
     finally:
         os.chdir(cwd); shutil.rmtree(d)

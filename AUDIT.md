@@ -1,4 +1,4 @@
-# Privacy & security audit: Unicorn Studio 2.0.0 (firmware us-2.0)
+# Privacy & security audit: Unicorn Studio 2.1.0 (firmware us-2.1)
 
 Audit date: 2026-10-30. Scope: everything in this repository plus the private development sources it was
 assembled from (which are **not** published). Method: manual code review of firmware, app, CLI and HA package;
@@ -30,6 +30,14 @@ Severity: High / Medium / Low / Info. Status: **Fixed**, **Open**, **Accepted**.
 | 17 | Animations | Excluded as fan art / third-party-derived (see below). The remaining UFO set and the Halloween icon set were generated procedurally. | - | **Fixed** (excluded) |
 | 18 | Process | The automated pre-publish gate referenced by the owner's policy is not wired into this environment; this audit + scanner is the substitute. Publishing needs explicit owner approval. | Info | **Open** |
 
+### 2.1.0 update (2026-10-31)
+| # | Area | Finding | Sev. | Status |
+|---|------|---------|------|--------|
+| 19 | Firmware | `umqtt.simple.connect()` opens a socket with no timeout (old versions) or `settimeout(None)` (new versions): a reconnect while the network is wedged blocked the main loop past the 45 s soft watchdog → reset ("watchdog: main loop stalled"). Now every umqtt socket gets a 6 s timeout, 4 failed connects restart Wi-Fi, the read loop yields after 250 ms, and `refresh` no longer re-sends all discovery configs. The original stall was not reproduced live (6 back-to-back uploads passed), so this is the most likely cause, not a proven one. | Medium | **Fixed** (likely cause) |
+| 20 | Mac app | Playlist Send uploaded missing animations and trusted a single text answer; a board reboot mid-send lost the playlist while the app looked done. Send now sends only the playlist JSON with an id, retries through reboots, and requires the board's state to list it. | Medium | **Fixed** |
+| 21 | CLI | `playlist play` printed "playing" for a playlist that did not exist. It now checks the board's list and confirms the switch from state. | Low | **Fixed** |
+| 22 | Firmware | New `playlist/get` returns stored items to anyone on the broker who can already control the board (same trust as every other topic). Names are validated (`good_name`), no paths. | Info | **OK** |
+
 ## Excluded animations (not in this repo)
 Fan art / product graphics / third-party references: `goggle_*`, `cool_smiley*` (car-LED product graphic),
 `green_baby*`, `multipass`, `element_stone*`, `neon_delta`, `stargate_*`, `ufo_alien_pilot` (stock-image
@@ -37,6 +45,8 @@ reference), the whole **Movie** and **Sci-Fi** folders. When in doubt items were
 
 ## Not tested
 * Galactic (53×11) and Stellar (16×16) hardware: simulation only.
+* 2.1.0 playlist UI (name/Save/picker/Send/Play, per-item speed) was compiled and its core logic self-tested;
+  the SwiftUI controls were not clicked by the auditor.
 * Mac app GUI clicks: the app's core upload/playlist code was exercised against the real board from a test
   driver; the SwiftUI buttons themselves were not clicked by the auditor.
 * x86_64 app runtime (built and signed universal; only run on Apple silicon).
@@ -49,3 +59,5 @@ reference), the whole **Movie** and **Sci-Fi** folders. When in doubt items were
 3. Optionally run gitleaks/trufflehog (needs install approval).
 4. `tools/scan-secrets.sh <private-terms-file>` must print `RESULT: clean`.
 5. Set your own git author (the root commit uses a neutral placeholder).
+
+23. **Refused playlist saves lost the app's id (fixed, us-2.1).** A rejected `playlist/save` (e.g. non-numeric speed) answered on result2 with an empty id, so the app could not match it and would have reported "board did not answer" after retries instead of the board's error. `playlist/save` now carries its id on errors too (fw_sim asserts it). Live-checked with a headless driver built on Core.swift: save→ok with id, confirmed in state.playlists, playlist/get round-trip matched the signature (incl. speed 15), bad speed refused with id, temp playlist deleted.

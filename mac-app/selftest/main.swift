@@ -54,6 +54,29 @@ import Foundation
         let bj = try? JSONSerialization.jsonObject(with: PlaylistIO.boardJSON(p)) as? [String: Any]
         let its = bj?["items"] as? [[String: Any]] ?? []
         check(its.count == 2 && its[0]["seconds"] as? Int == 2 && its[1]["seconds"] as? Int == 3600 && its[0]["file"] == nil, "board playlist JSON clamps seconds, has no local paths")
+        let bj2 = try? JSONSerialization.jsonObject(with: PlaylistIO.boardJSON(p, id: "x1")) as? [String: Any]
+        check(bj2?["id"] as? String == "x1" && bj2?["name"] as? String == "test", "board playlist JSON carries the save id")
+        check(PlaylistIO.signature(p) == PlaylistIO.signature(Playlist(name: "test", items: p.items.map { PlaylistItem(mode: $0.mode, seconds: $0.seconds) })),
+              "playlist signature ignores local file paths")
+        check(PlaylistIO.missing(Playlist(name: "m", items: [PlaylistItem(mode: "custom:a"), PlaylistItem(mode: "custom:b"), PlaylistItem(mode: "custom:a"), PlaylistItem(mode: "clock")]), onBoard: ["b"]) == ["a"],
+              "playlist items not on the board are flagged (once each), built-ins never")
+        let ans = { (s: String) in Data(s.utf8) }
+        check(PlaylistIO.saveAnswer(ans(#"{"id":"x1","ok":true,"msg":"ok playlist test 2 items"}"#), id: "x1", name: "test")?.ok == true, "save answer matched by id")
+        check(PlaylistIO.saveAnswer(ans(#"{"id":"x1","ok":false,"msg":"error playlist/save: bad"}"#), id: "x1", name: "test")?.ok == false, "save refusal reported")
+        check(PlaylistIO.saveAnswer(ans(#"{"id":"zz","ok":true,"msg":"ok playlist test 2 items"}"#), id: "x1", name: "test") == nil, "someone else's answer ignored")
+        check(PlaylistIO.saveAnswer(ans(#"{"id":"","ok":true,"msg":"ok playlist test 2 items"}"#), id: "x1", name: "test")?.ok == true
+              && PlaylistIO.saveAnswer(ans(#"{"id":"","ok":true,"msg":"ok playlist test2 2 items"}"#), id: "x1", name: "test") == nil, "us-2.0 answer (no id) matched by exact name")
+        let fb = PlaylistIO.fromBoard(ans(#"{"name":"bp","items":[{"mode":"clock","seconds":5},{"mode":"custom:x","seconds":12,"speed":15}]}"#), name: "bp")
+        check(fb?.items.map { "\($0.mode)|\($0.seconds)|\($0.speed.map(String.init) ?? "-")" } == ["clock|5|-", "custom:x|12|15"] && PlaylistIO.fromBoard(ans(#"{"name":"bp","error":"no such playlist"}"#), name: "bp") == nil,
+              "board playlist import (speed kept; missing = board speed)")
+        // per-item speed: default Normal (10), clamped, sent to the board, older files load as Normal
+        let sp = Playlist(name: "sp", items: [PlaylistItem(mode: "custom:a"), PlaylistItem(mode: "clock", speed: 99), PlaylistItem(mode: "matrix", speed: nil)])
+        let spj = (try? JSONSerialization.jsonObject(with: PlaylistIO.boardJSON(sp)) as? [String: Any])?["items"] as? [[String: Any]] ?? []
+        check(spj.map { $0["speed"] as? Int ?? -1 } == [10, 20, -1], "board JSON: speed default 10, clamped, omitted when unset")
+        try? FileManager.default.createDirectory(at: PlaylistIO.dir, withIntermediateDirectories: true)
+        try? Data(#"{"name":"old","items":[{"mode":"clock","seconds":5}]}"#.utf8).write(to: PlaylistIO.dir.appendingPathComponent("old.json"))
+        check(PlaylistIO.load("old")?.items.first?.speed == 10, "older playlist files load with Normal speed")
+        check(PlaylistIO.signature(sp) != PlaylistIO.signature(Playlist(name: "sp", items: sp.items.map { var i = $0; i.speed = 10; return i })), "speed change counts as a change to send")
         // config file parsing (with a pointer file)
         let c1 = tmp.appendingPathComponent("config.env"), c2 = tmp.appendingPathComponent("other.env")
         try? "MQTT_BROKER=broker.example\nSECRETS_FILE=\(c2.path)\n".write(to: c1, atomically: true, encoding: .utf8)

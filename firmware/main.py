@@ -4,7 +4,7 @@
 import time, machine, network, gc, json, os, math, random
 import micropython
 
-VERSION = "us-2.0"
+VERSION = "us-2.1"
 
 # ---------- board auto-detect (each Pimoroni MicroPython build ships one board module) ----------
 try:
@@ -312,7 +312,7 @@ def draw_scroll():
     c = st["color"]
     g.set_pen(pen(c[0], c[1], c[2]))
     g.text(txt, int(scroll_x), (H - 8) // 2 + (1 if H > 16 else 0), -1, 1)
-    scroll_x -= st["speed"] / 10
+    scroll_x -= spd() / 10
     if scroll_x < -w:
         scroll_x = float(W)
 
@@ -326,7 +326,7 @@ def init_stars():
 
 def draw_starfield():
     clear()
-    sp = st["speed"] / 20
+    sp = spd() / 20
     for s in stars:
         s[2] -= sp
         if s[2] <= 0.5:
@@ -356,7 +356,7 @@ def init_matrix():
 
 def draw_matrix():
     clear()
-    sp = st["speed"] / 10
+    sp = spd() / 10
     for x in range(W):
         d = drops[x]
         d[0] += d[1] * sp
@@ -395,7 +395,7 @@ def init_plasma():
 @micropython.native
 def draw_plasma():
     global pt
-    pt += st["speed"] * 0.4
+    pt += spd() * 0.4
     t = int(pt)
     sx = [SIN[(x * 8 + t) & 255] for x in range(W)]
     sy = [SIN[(y * 10 - t * 2) & 255] for y in range(H)]
@@ -673,7 +673,7 @@ def draw_custom():
         return
     f, durs, i, t0, _n = cust
     now = time.ticks_ms()
-    if len(durs) > 1 and time.ticks_diff(now, t0) >= durs[i] * 10 // st["speed"]:
+    if len(durs) > 1 and time.ticks_diff(now, t0) >= durs[i] * 10 // spd():
         i = (i + 1) % len(durs)
         f.seek(i * FRAME)
         f.readinto(CBUF)
@@ -695,7 +695,19 @@ def norm_item(it):
     if not (m in MODES or m in ("fire", "rainbow", "supercomputer") or (m.startswith("custom:") and good_name(m[7:]))):
         raise ValueError("bad item mode %s" % m)
     s = int(it.get("seconds", 10))
-    return {"mode": m, "seconds": max(2, min(3600, s))}
+    out = {"mode": m, "seconds": max(2, min(3600, s))}
+    if it.get("speed") is not None:      # optional per-item speed 1..20 (10 = the display's own timing)
+        out["speed"] = max(1, min(20, int(it["speed"])))
+    return out
+
+def spd():
+    """Animation speed now: the playing playlist item's own speed if it has one, else the global speed.
+    st["speed"] itself is never changed by a playlist, so leaving the playlist restores it."""
+    if pl and st["mode"] == "playlist" and not live and pl["cur"] is not None:
+        s = pl["items"][pl["idx"]].get("speed")
+        if s:
+            return s
+    return st["speed"]
 
 def pl_save(m):
     j = json.loads(m)
@@ -810,7 +822,7 @@ def draw_mode():
         tcenter("EMPTY", (H - 5) // 2, pen(90, 90, 90))
     elif ext is not None:
         if RM == "rainbow":
-            ext.speed = st["speed"] / 2
+            ext.speed = spd() / 2
         ext.draw()
     elif RM == "clock":
         draw_clock()
@@ -837,7 +849,7 @@ def frame_ms():
     if RM == "agenda":
         return 120
     if RM in ("fire", "supercomputer", "life"):
-        return max(5, 105 - st["speed"] * 5)
+        return max(5, 105 - spd() * 5)
     return 20
 
 def mode_label():
@@ -1023,14 +1035,31 @@ def res(msg, uid="", ok=None, topic="custom"):
         pass
 
 def playlist_msg(k, m):
-    global need_disc
+    global need_disc, pub_due
     if k == "playlist/save":
+        try:
+            uid = str(json.loads(m).get("id", ""))[:16]
+        except Exception:
+            uid = ""
         name, n = pl_save(m)
         if st["mode"] == "playlist" and st.get("playlist") == name:
             init_mode()
         need_disc = True
         mark()
-        res("ok playlist %s %d items" % (name, n), "", True, "playlist")
+        pub_due = True
+        res("ok playlist %s %d items" % (name, n), uid, True, "playlist")
+    elif k == "playlist/get":
+        # answer with the stored items so the app can import a playlist that only exists on the board
+        name = bytes(m).decode().strip()
+        if not good_name(name):
+            raise ValueError("bad name")
+        try:
+            with open(PDIR + "/" + name + ".json") as f:
+                items = json.load(f)["items"]
+            out = {"name": name, "items": items}
+        except Exception:
+            out = {"name": name, "error": "no such playlist"}
+        pub(BASE + "/playlist/items", json.dumps(out))
     elif k == "playlist/delete":
         name = bytes(m).decode().strip()
         if not good_name(name):
@@ -1093,7 +1122,7 @@ def state_json():
         "color_mode": "rgb", "color": {"r": c[0], "g": c[1], "b": c[2]},
         "effect": mode_label(), "mode": mode_label(), "customs": customs(), "playlists": playlists(), "modes": MODES,
         "playing": (pl["cur"] if pl else None), "rotation": str(st["rotation"]),
-        "text": st["text"], "speed": st["speed"], "ip": ip, "board": BOARD, "width": W, "height": H,
+        "text": st["text"], "speed": st["speed"], "speed_now": spd(), "ip": ip, "board": BOARD, "width": W, "height": H,
         "uptime": uptime_ms // 1000, "mem_free": gc.mem_free(), "time_synced": ntp_ok, "version": VERSION,
         "ota": bool(OTA_KEY), "reset_reason": RESET_WHY})
 
@@ -1207,7 +1236,7 @@ def ota(m):
     pub(BASE + "/ota/result", r)
 
 def on_msg(t, m):
-    global need_disc, reboot_at, cmsg_t
+    global need_disc, reboot_at, cmsg_t, pub_due
     t = t.decode()
     if t == "homeassistant/status":
         if m == b"online":
@@ -1222,7 +1251,7 @@ def on_msg(t, m):
     k = t[len(BASE) + 1:]
     if k.startswith("custom/") or k.startswith("playlist/"):
         cmsg_t = time.ticks_ms()
-        if k.endswith("/result") or k.endswith("/result2") or k == "custom/ack":
+        if k.endswith("/result") or k.endswith("/result2") or k == "custom/ack" or k == "playlist/items":
             return
         try:
             if k.startswith("custom/"):
@@ -1231,7 +1260,7 @@ def on_msg(t, m):
                 playlist_msg(k, m)
         except Exception as e:
             uid = ""
-            if k in ("custom/begin", "custom/end"):
+            if k in ("custom/begin", "custom/end", "playlist/save"):
                 try:
                     uid = str(json.loads(m).get("id", ""))[:16]
                 except Exception:
@@ -1243,6 +1272,9 @@ def on_msg(t, m):
     try:
         s = m.decode()
     except Exception:
+        return
+    if k == "refresh/set":
+        pub_due = True      # just republish the state: no discovery, no settings write
         return
     print("CMD", k, s[:60])
     try:
@@ -1272,8 +1304,6 @@ def on_msg(t, m):
             st["speed"] = max(1, min(20, int(float(s))))
         elif k == "reboot/set":
             reboot_at = time.ticks_add(time.ticks_ms(), 500)
-        elif k == "refresh/set":
-            need_disc = True
         mark()
     except Exception as e:
         print("cmd err", k, e)
@@ -1333,13 +1363,35 @@ def mq_drop():
 
 POLL = None
 
+class _TSock:
+    # Stand-in for the socket module inside umqtt.simple: the blocking connect / CONNACK read
+    # used to hang with no timeout when the network was wedged, which tripped the watchdog.
+    def __init__(self, real):
+        self.r = real
+        self.getaddrinfo = real.getaddrinfo
+    def socket(self, *a):
+        so = self.r.socket(*a)
+        so.settimeout(6)
+        return so
+    def __getattr__(self, k):
+        return getattr(self.r, k)
+
+mq_fail = 0
+
 def mq_connect():
-    global mq, need_disc, POLL
+    global mq, need_disc, POLL, mq_fail
     from umqtt.simple import MQTTClient
+    import umqtt.simple as _us
+    if not isinstance(_us.socket, _TSock):
+        _us.socket = _TSock(_us.socket)      # every socket umqtt opens gets a timeout
     c = MQTTClient(DEV, BROKER, port=PORT, user=MUSER, password=MPASS, keepalive=60)
     c.set_last_will(BASE + "/status", "offline", retain=True)
     c.set_callback(on_msg)
-    c.connect()
+    alive[0] = time.ticks_ms()
+    try:
+        c.connect(timeout=6)        # newer umqtt: settimeout(timeout) (None would block forever)
+    except TypeError:
+        c.connect()                 # older umqtt: the _TSock shim already set a timeout
     mq = c
     import select
     POLL = select.poll()
@@ -1352,12 +1404,14 @@ def mq_connect():
         c.subscribe(BASE + "/custom/" + k)
     c.subscribe(BASE + "/playlist/save")
     c.subscribe(BASE + "/playlist/delete")
+    c.subscribe(BASE + "/playlist/get")
     c.subscribe("unicorn/agenda")
     c.subscribe("homeassistant/status")
     discovery()
     pub(BASE + "/status", "online", True)
     pub(BASE + "/state", state_json(), True)
     need_disc = False
+    mq_fail = 0
     print("MQTT up", DEV)
 
 def http_time():
@@ -1383,7 +1437,7 @@ def http_time():
     machine.RTC().datetime((yr, mon, day, wd, hh, mm, ss, 0))
 
 def net_tick(now):
-    global wifi_t, mq_t, ntp_t, ntp_ok, ip
+    global wifi_t, mq_t, ntp_t, ntp_ok, ip, mq_fail
     if not SSID:
         return
     if not wlan.isconnected():
@@ -1427,8 +1481,17 @@ def net_tick(now):
         try:
             mq_connect()
         except Exception as e:
-            print("MQTT err", e)
+            mq_fail += 1
+            print("MQTT err", e, "fails", mq_fail)
             mq_drop()
+            if mq_fail >= 4:            # stuck TCP stack: restart Wi-Fi instead of waiting for a watchdog reset
+                mq_fail = 0
+                print("WIFI restart after MQTT failures")
+                try:
+                    wlan.disconnect()
+                except Exception:
+                    pass
+                wifi_t = None
 
 # ---------- buttons ----------
 BTNS = (U.SWITCH_A, U.SWITCH_B, U.SWITCH_C, U.SWITCH_D, U.SWITCH_SLEEP)
@@ -1504,6 +1567,9 @@ def run():
                         if gc.mem_free() < 80000:
                             gc.collect()
                         mq_read()
+                        alive[0] = time.ticks_ms()       # progress made; still bounded by the socket timeouts
+                        if time.ticks_diff(alive[0], now) > 250:
+                            break                         # keep drawing during upload bursts
                     if up is not None and time.ticks_diff(now, up["t"]) > 60000:
                         up_reset()       # abandoned upload
                     if need_disc and up is None and time.ticks_diff(now, cmsg_t) > 3000:

@@ -18,9 +18,11 @@
   unicorn customs                    list displays stored on the board
   unicorn delete-custom <name>
   unicorn playlist list
-  unicorn playlist set <name> <item>=<seconds> ...   item: clock, agenda, today/date, custom:<name> or a .json path
+  unicorn playlist set <name> <item>=<seconds>[@<speed>] ...   item: clock, agenda, today/date, custom:<name> or a .json path
+                                     speed 1..20 per item, default 10 = normal (as made)
                                      (displays missing on the board are uploaded first)
-  unicorn playlist play <name>
+  unicorn playlist play <name>             checks the board has it and that it really switched
+  unicorn playlist show <name>             items stored on the board (firmware us-2.1+)
   unicorn playlist delete <name>
   unicorn push <file.py>             update a file on the board: signed over Wi-Fi if OTA_KEY is set, else USB
   unicorn boards                     list boards seen on the broker
@@ -180,6 +182,22 @@ def get_state(mq, fresh=True):
         if st is not None and av is not None and (not fresh or st.get("uptime") is not None):
             break
     return st, av
+
+
+def wait_state(mq, ok, seconds=8):
+    """Read state messages until ok(state) is true; asks the board to republish once a second."""
+    end = time.time() + seconds
+    while time.time() < end:
+        mq.pub(BASE + "/refresh/set", "1")
+        for t, p in mq.messages(1.0):
+            if t.endswith("/state"):
+                try:
+                    j = json.loads(p)
+                except ValueError:
+                    continue
+                if ok(j):
+                    return j
+    return None
 
 
 # ---- displays ----
@@ -436,6 +454,12 @@ def main(argv):
                     m, _, secs = spec.rpartition("=")
                     if not m:
                         m, secs = secs, "10"
+                    secs, _, speed = secs.partition("@")
+                    try:
+                        speed = max(1, min(20, int(speed or 10)))      # 10 = normal (the display's own timing)
+                        secs = int(secs or 10)
+                    except ValueError:
+                        sys.exit("bad item %s (use item=seconds or item=seconds@speed, speed 1..20)" % spec)
                     if m.endswith(".json") or (not m.startswith("custom:") and m not in (st.get("modes") or BUILTINS) and m != "date"):
                         n, durs, frames = load_display(m, st.get("width", 32), st.get("height", 32))
                         if n not in st.get("customs", []):
@@ -444,14 +468,49 @@ def main(argv):
                                 sys.exit("upload of %s failed" % n)
                             st.setdefault("customs", []).append(n)
                         m = "custom:" + n
-                    items.append({"mode": m, "seconds": max(2, min(3600, int(secs)))})
+                    items.append({"mode": m, "seconds": max(2, min(3600, secs)), "speed": speed})
+                if not items:
+                    sys.exit("a playlist needs at least one item")
                 mq.sub(BASE + "/playlist/result")
                 list(mq.messages(0.3))
-                mq.pub(BASE + "/playlist/save", json.dumps({"name": name, "items": items}))
+                ans = ""
+                for attempt in range(3):
+                    mq.pub(BASE + "/playlist/save", json.dumps({"name": name, "items": items}))
+                    for t, p in mq.messages(6):
+                        if t.endswith("/playlist/result"):
+                            ans = p.decode("utf-8", "replace"); break
+                    if ans:
+                        break
+                print("board:", ans or "(no answer)")
+                if not ans.startswith("ok playlist %s " % name):
+                    sys.exit("the board did not store playlist %s" % name)
+                if wait_state(mq, lambda j: name in j.get("playlists", [])) is None:
+                    sys.exit("the board answered, but %s is not in its playlist list" % name)
+                print("saved on the board: %s (%d items)" % (name, len(items)))
+            elif sub == "show":
+                mq.sub(BASE + "/playlist/items")
+                list(mq.messages(0.3))
+                mq.pub(BASE + "/playlist/get", a[1])
                 for t, p in mq.messages(5):
-                    print("board:", p.decode()); break
+                    j = json.loads(p)
+                    if j.get("name") != a[1]:
+                        continue
+                    if j.get("error"):
+                        sys.exit("board: " + j["error"])
+                    for it in j["items"]:
+                        sp = it.get("speed")
+                        print("%-28s %4ss  speed %s" % (it["mode"], it["seconds"], ("%d%s" % (sp, " (normal)" if sp == 10 else "")) if sp else "board's global speed"))
+                    break
+                else:
+                    sys.exit("no answer (the board needs firmware us-2.1 or newer for 'playlist show')")
             elif sub == "play":
-                mq.pub(BASE + "/mode/set", "playlist:" + a[1]); time.sleep(0.5); print("playing playlist:" + a[1])
+                name = a[1]
+                if name not in st.get("playlists", []):
+                    sys.exit("no playlist %s on the board (it has: %s)" % (name, ", ".join(st.get("playlists", [])) or "none"))
+                mq.pub(BASE + "/mode/set", "playlist:" + name)
+                if wait_state(mq, lambda j: j.get("mode") == "playlist:" + name) is None:
+                    sys.exit("the board did not switch to playlist:%s" % name)
+                print("playing playlist:" + name)
             elif sub == "delete":
                 mq.sub(BASE + "/playlist/result")
                 list(mq.messages(0.3))
@@ -459,7 +518,7 @@ def main(argv):
                 for t, p in mq.messages(5):
                     print("board:", p.decode()); break
             else:
-                sys.exit("playlist list | set <name> <item>=<s>... | play <name> | delete <name>")
+                sys.exit("playlist list | set <name> <item>=<s>... | show <name> | play <name> | delete <name>")
         else:
             sys.exit("unknown command; try: unicorn help")
     finally:

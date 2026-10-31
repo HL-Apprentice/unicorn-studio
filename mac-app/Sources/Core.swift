@@ -253,9 +253,18 @@ public struct PlaylistItem: Identifiable, Equatable, Codable {
     public var id = UUID()
     public var mode: String          // "clock", "agenda", ... or "custom:<name>"
     public var seconds: Int
-    public var file: String?         // library-relative JSON for custom items (auto-upload source)
-    enum CodingKeys: String, CodingKey { case mode, seconds, file }
-    public init(mode: String, seconds: Int = 10, file: String? = nil) { self.mode = mode; self.seconds = seconds; self.file = file }
+    public var speed: Int?           // 1...20 animation speed while this item plays; 10 = normal (the file's own timing);
+                                     // nil = the board's global speed (playlists made before per-item speed)
+    public var file: String?         // library-relative JSON (legacy; never uploaded from a playlist)
+    enum CodingKeys: String, CodingKey { case mode, seconds, speed, file }
+    public static let normalSpeed = 10
+    public init(mode: String, seconds: Int = 10, speed: Int? = PlaylistItem.normalSpeed, file: String? = nil) {
+        self.mode = mode; self.seconds = seconds; self.speed = speed.map { max(1, min(20, $0)) }; self.file = file
+    }
+    public static func speedLabel(_ s: Int?) -> String {
+        guard let s = s else { return "board speed" }
+        return s == normalSpeed ? "normal" : (s < normalSpeed ? "slower" : "faster")
+    }
 }
 public struct Playlist: Codable, Equatable { public var name: String; public var items: [PlaylistItem] }
 
@@ -266,8 +275,10 @@ public enum PlaylistIO {
         return f.filter { $0.hasSuffix(".json") }.map { String($0.dropLast(5)) }.sorted()
     }
     public static func load(_ name: String) -> Playlist? {
-        guard let d = try? Data(contentsOf: dir.appendingPathComponent(name + ".json")), d.count < 1_000_000 else { return nil }
-        return try? JSONDecoder().decode(Playlist.self, from: d)
+        guard let d = try? Data(contentsOf: dir.appendingPathComponent(name + ".json")), d.count < 1_000_000,
+              var p = try? JSONDecoder().decode(Playlist.self, from: d) else { return nil }
+        for i in p.items.indices where p.items[i].speed == nil { p.items[i].speed = PlaylistItem.normalSpeed }   // older files: Normal
+        return p
     }
     public static func save(_ p: Playlist) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -275,10 +286,44 @@ public enum PlaylistIO {
         try e.encode(p).write(to: dir.appendingPathComponent(p.name + ".json"), options: .atomic)
     }
     public static func delete(_ name: String) { try? FileManager.default.removeItem(at: dir.appendingPathComponent(name + ".json")) }
-    /// What the board receives (no local file paths).
-    public static func boardJSON(_ p: Playlist) -> Data {
-        let items: [[String: Any]] = p.items.map { ["mode": $0.mode, "seconds": max(2, min(3600, $0.seconds))] }
-        return (try? JSONSerialization.data(withJSONObject: ["name": p.name, "items": items])) ?? Data()
+    /// What the board receives (no local file paths). `id` lets the app match the board's answer (us-2.1+).
+    public static func boardJSON(_ p: Playlist, id: String? = nil) -> Data {
+        let items: [[String: Any]] = p.items.map {
+            var it: [String: Any] = ["mode": $0.mode, "seconds": max(2, min(3600, $0.seconds))]
+            if let s = $0.speed { it["speed"] = max(1, min(20, s)) }
+            return it
+        }
+        var o: [String: Any] = ["name": p.name, "items": items]
+        if let id = id { o["id"] = id }
+        return (try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])) ?? Data()
+    }
+    /// Stable fingerprint of what the board would store (to tell "on the board and up to date" from "changed since sent").
+    public static func signature(_ p: Playlist) -> String { String(decoding: boardJSON(p), as: UTF8.self) }
+    /// Custom displays used by the playlist that the board does not have (they would be skipped, never uploaded here).
+    public static func missing(_ p: Playlist, onBoard: [String]) -> [String] {
+        var out = [String]()
+        for it in p.items where it.mode.hasPrefix("custom:") {
+            let n = String(it.mode.dropFirst(7))
+            if !onBoard.contains(n) && !out.contains(n) { out.append(n) }
+        }
+        return out
+    }
+    /// The board's playlist/result2 answer: true = stored, false = refused, nil = not an answer to this save.
+    public static func saveAnswer(_ d: Data, id: String, name: String) -> (ok: Bool, msg: String)? {
+        guard let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+        let rid = j["id"] as? String ?? "", msg = j["msg"] as? String ?? "", ok = j["ok"] as? Bool ?? false
+        if rid == id { return (ok, msg) }
+        if rid.isEmpty && ok && msg.hasPrefix("ok playlist \(name) ") { return (true, msg) }   // us-2.0 firmware: no id echo
+        return nil
+    }
+    /// A playlist/items answer (us-2.1+): the items the board has stored under `name`.
+    public static func fromBoard(_ d: Data, name: String) -> Playlist? {
+        guard let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], j["name"] as? String == name,
+              let its = j["items"] as? [[String: Any]] else { return nil }
+        return Playlist(name: name, items: its.compactMap { it in
+            guard let m = it["mode"] as? String else { return nil }
+            return PlaylistItem(mode: m, seconds: it["seconds"] as? Int ?? 10, speed: it["speed"] as? Int)
+        })
     }
 }
 

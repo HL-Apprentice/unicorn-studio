@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 APP="Unicorn Studio"
 BUNDLE_ID="${BUNDLE_ID:-io.github.unicorn-studio}"
-VERSION="${VERSION:-2.0.0}"
+VERSION="${VERSION:-2.1.0}"
 ARCHS="${ARCHS:-arm64 x86_64}"
 MIN_OS="13.0"
 B=build; D=dist

@@ -63,11 +63,16 @@ final class AppModel: ObservableObject {
     @Published var refreshing = false
     // playlists
     @Published var plNames: [String] = []
-    @Published var pl = Playlist(name: "my_playlist", items: [])
-    @Published var plDirty = false
+    @Published var pl = Playlist(name: "", items: [])
+    @Published var plDirty = false                // edits not saved on this Mac yet
+    @Published var plSavedName: String? = nil     // the Mac file the open playlist came from / was saved as
+    @Published var plSource = "new"               // picker tag: "new", "mac:<name>", "board:<name>"
+    @Published var plLog = ""
+    @Published var plOK: Bool? = nil
+    @Published var bOnline = false
+    var plAnswers: [Data] = []                    // playlist/result2 answers
+    var plItems: [String: Data] = [:]             // playlist/items answers by name
     @Published var libraryLoading = false
-    @Published var plUnsent = false      // local edits not yet sent to the board
-    var plResult = ""
     var undoStack: [[Frame]] = []
     var recent: [UInt32] = []
     let mq = MQTT()
@@ -91,7 +96,7 @@ final class AppModel: ObservableObject {
             let first = pls.first.flatMap { PlaylistIO.load($0) }
             DispatchQueue.main.async {
                 self.library = lib; self.plNames = pls; self.libraryLoading = false
-                if self.pl.items.isEmpty, let p = first { self.pl = p }
+                if self.pl.items.isEmpty, self.plSavedName == nil, let p = first { self.pl = p; self.plSavedName = p.name; self.plSource = "mac:" + p.name }
             }
         }
         if let s = UserDefaults.standard.string(forKey: "canvas"), let k = BoardKind.all.first(where: { $0.id == s }) { W = k.w; H = k.h }
@@ -109,8 +114,13 @@ final class AppModel: ObservableObject {
             if t.hasPrefix(b + "/custom/") { self.up?.feed(t, p) }
             DispatchQueue.main.async {
                 if t == b + "/state" { self.applyState(p); if t.hasPrefix("unicorn/") { self.noteSeen(t, p) } }
-                else if t == b + "/status" { self.bInfo = "board " + String(decoding: p.prefix(20), as: UTF8.self) }
-                else if t == b + "/playlist/result" { self.plResult = String(decoding: p.prefix(200), as: UTF8.self) }
+                else if t == b + "/status" {
+                    let s = String(decoding: p.prefix(20), as: UTF8.self); self.bOnline = s == "online"; self.bInfo = "board " + s
+                }
+                else if t == b + "/playlist/result2" { self.plAnswers.append(p) }
+                else if t == b + "/playlist/items" {
+                    if let j = try? JSONSerialization.jsonObject(with: p) as? [String: Any], let n = j["name"] as? String { self.plItems[n] = p }
+                }
                 else if t.hasPrefix("unicorn/"), t.hasSuffix("/state") { self.noteSeen(t, p) }
             }
         }
@@ -123,7 +133,7 @@ final class AppModel: ObservableObject {
         var subs = ["unicorn/+/state"]
         if !base.isEmpty {
             up = Uploader(mq: mq, base: base)
-            subs += [base + "/state", base + "/status", base + "/custom/ack", base + "/custom/result", base + "/custom/result2", base + "/playlist/result"]
+            subs += [base + "/state", base + "/status", base + "/custom/ack", base + "/custom/result", base + "/custom/result2", base + "/playlist/result2", base + "/playlist/items"]
         }
         conn = "connecting…"
         mq.start(cfg, subs: subs)
@@ -160,11 +170,12 @@ final class AppModel: ObservableObject {
         var info = "\(bBoard.capitalized) \(bW)×\(bH) · fw \(bVersion) · up \((j["uptime"] as? Int ?? 0) / 60) min"
         if let r = j["reset_reason"] as? String, !r.isEmpty { info += " · last reset: " + r }
         bInfo = info
-        bStateAt = Date(); refreshing = false
+        bStateAt = Date(); refreshing = false; bOnline = true
         if autoSize, bW > 0, bH > 0, (bW != W || bH != H) { setCanvas(bW, bH) }
     }
     /// What is playing right now ("custom:x", "clock", ...), also inside a playlist.
     var nowPlaying: String { bPlaying ?? bMode }
+    var bSpeedInt: Int { max(1, min(20, Int(bSpeed))) }
     var modes: [String] {
         var m = bModes.isEmpty ? BUILTIN_MODES : bModes.filter { !$0.hasPrefix("custom:") && !$0.hasPrefix("playlist:") }
         m += bCustoms.map { "custom:" + $0 } + bPlaylists.map { "playlist:" + $0 }
@@ -357,94 +368,185 @@ final class AppModel: ObservableObject {
     }
 
     // ---- playlists ----
+    // Flow: add items that are already ON THE BOARD (or built-in modes) -> name it -> Save (on this Mac)
+    //       -> Send to board (only the playlist JSON; displays are never uploaded from here) -> Play.
     func refreshPlaylists() { plNames = PlaylistIO.list() }
+    var plOnBoard: Bool { bPlaylists.contains(pl.name) }
+    var plMissing: [String] { PlaylistIO.missing(pl, onBoard: bCustoms) }
+    func sentKey(_ n: String) -> String { "plSent|\(base)|\(n)" }
+    var plUpToDate: Bool { plOnBoard && UserDefaults.standard.string(forKey: sentKey(pl.name)) == PlaylistIO.signature(pl) }
+    /// One line saying where the open playlist lives.
+    var plStatus: (String, Color) {
+        if plSavedName == nil {
+            return (pl.items.isEmpty ? "New playlist: add items, type a name, press Save." : "Not saved yet: type a name and press Save.", .orange)
+        }
+        if plDirty { return ("Unsaved changes: press Save.", .orange) }
+        if !plOnBoard { return ("Saved on this Mac only. Next: Send to board.", .orange) }
+        if !plUpToDate { return ("On the board, but this Mac's copy is different (or was never sent from here). Send to board to update it.", .orange) }
+        return ("✓ Saved on this Mac and on the board.", .green)
+    }
+    func edited() { plDirty = true }
     func newPlaylist() {
-        var n = "playlist", i = 1
-        while plNames.contains(n) { i += 1; n = "playlist_\(i)" }
-        pl = Playlist(name: n, items: []); savePlaylist()
+        pl = Playlist(name: "", items: []); plSavedName = nil; plSource = "new"; plDirty = false; plOK = nil
+        plLog = "New playlist. Add items from “On the board” or the built-in modes, type a name, then Save."
     }
-    func selectPlaylist(_ n: String) { if let p = PlaylistIO.load(n) { pl = p; plDirty = false; plUnsent = !bPlaylists.contains(n) } }
-    func savePlaylist() {
-        pl.name = DisplayIO.boardName(pl.name)
-        do { try PlaylistIO.save(pl); plDirty = false; plUnsent = true; refreshPlaylists() } catch { sendLog = "playlist save failed: \(error.localizedDescription)" }
+    func choosePlaylist(_ tag: String) {
+        if tag == "new" { newPlaylist() }
+        else if tag.hasPrefix("mac:") { openLocalPlaylist(String(tag.dropFirst(4))) }
+        else if tag.hasPrefix("board:") { importBoardPlaylist(String(tag.dropFirst(6))) }
     }
-    func renamePlaylist(_ new: String) {
-        let n = DisplayIO.boardName(new); guard n != pl.name, !n.isEmpty else { return }
-        let old = pl.name
-        pl.name = n; savePlaylist(); PlaylistIO.delete(old); refreshPlaylists()
-        if bPlaylists.contains(old) { deletePlaylistFromBoard(old) }
+    func openLocalPlaylist(_ n: String) {
+        guard let p = PlaylistIO.load(n) else { plLog = "could not read \(n).json"; plOK = false; refreshPlaylists(); return }
+        pl = p; plSavedName = n; plSource = "mac:" + n; plDirty = false; plLog = ""; plOK = nil
     }
+    /// A playlist that is on the board but not on this Mac: ask the board for its items (firmware us-2.1+).
+    func importBoardPlaylist(_ n: String) {
+        pl = Playlist(name: n, items: []); plSavedName = nil; plSource = "board:" + n; plDirty = false; plOK = nil
+        guard connected else { plLog = "offline: can't read “\(n)” from the board"; plOK = false; return }
+        plLog = "asking the board for the items of “\(n)”…"
+        plItems[n] = nil
+        mq.publish(base + "/playlist/get", n)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.waitImport(n, tries: 25) }
+    }
+    func waitImport(_ n: String, tries: Int) {
+        guard plSource == "board:" + n, pl.items.isEmpty else { return }      // the user moved on
+        if let d = plItems[n] {
+            if let p = PlaylistIO.fromBoard(d, name: n) {
+                pl = p; plDirty = true
+                UserDefaults.standard.set(PlaylistIO.signature(p), forKey: sentKey(n))
+                plLog = "Imported “\(n)” (\(p.items.count) items) from the board. Press Save to keep a copy on this Mac."; plOK = true
+            } else { plLog = "the board has no playlist “\(n)” any more"; plOK = false; refreshBoard() }
+            return
+        }
+        if tries <= 0 {
+            plLog = "The board did not send the items of “\(n)” (its firmware is older than us-2.1). You can still Play it; to edit it, add the items here, Save, and Send to board to replace it."
+            plOK = false; return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.waitImport(n, tries: tries - 1) }
+    }
+    /// The name Save will use, or nil if the field is empty.
+    var plCleanName: String? {
+        let t = pl.name.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? nil : DisplayIO.boardName(t)
+    }
+    /// Save on this Mac under the name in the Name field (a different name than the open file = a new copy).
+    @discardableResult func savePlaylist() -> Bool {
+        guard let n = plCleanName else { plLog = "Type a name for the playlist first."; plOK = false; return false }
+        guard !pl.items.isEmpty else { plLog = "Add at least one item before saving."; plOK = false; return false }
+        guard pl.items.count <= 32 else { plLog = "A playlist can have at most 32 items (it has \(pl.items.count))."; plOK = false; return false }
+        if n != plSavedName && plNames.contains(n) {
+            plLog = "There is already a playlist called “\(n)” on this Mac. Pick another name, or open that one."; plOK = false; return false
+        }
+        pl.name = n
+        do { try PlaylistIO.save(pl) } catch { plLog = "Save failed: \(error.localizedDescription)"; plOK = false; return false }
+        plSavedName = n; plSource = "mac:" + n; plDirty = false; refreshPlaylists()
+        plLog = "Saved “\(n)” on this Mac (\(pl.items.count) items)." + (plUpToDate ? "" : " Next: Send to board."); plOK = true
+        return true
+    }
+    /// Rename the open (saved) playlist on this Mac to the name in the Name field.
+    func renamePlaylist() {
+        guard let old = plSavedName, let n = plCleanName, n != old else { return }
+        guard !plNames.contains(n) else { plLog = "There is already a playlist called “\(n)” on this Mac."; plOK = false; return }
+        pl.name = n
+        do { try PlaylistIO.save(pl) } catch { plLog = "Rename failed: \(error.localizedDescription)"; plOK = false; return }
+        PlaylistIO.delete(old); plSavedName = n; plSource = "mac:" + n; plDirty = false; refreshPlaylists()
+        plLog = "Renamed to “\(n)” on this Mac." + (bPlaylists.contains(old) ? " The board still has it as “\(old)”: Send to board stores “\(n)”, and the trash button on “\(old)” in the Board tab removes the old copy." : "")
+        plOK = true
+    }
+    /// Delete the open playlist from this Mac (the board copy is separate: Remove from board).
     func deletePlaylist() {
-        let old = pl.name
-        PlaylistIO.delete(old); refreshPlaylists()
-        if bPlaylists.contains(old) { deletePlaylistFromBoard(old) }
-        if let f = plNames.first, let p = PlaylistIO.load(f) { pl = p } else { pl = Playlist(name: "my_playlist", items: []) }
+        if let old = plSavedName { PlaylistIO.delete(old); refreshPlaylists(); plLog = "Deleted “\(old)” from this Mac." + (bPlaylists.contains(old) ? " It is still on the board." : "") }
+        pl = Playlist(name: "", items: []); plSavedName = nil; plSource = "new"; plDirty = false; plOK = nil
     }
-    func addToPlaylist(mode: String, file: URL? = nil) {
-        pl.items.append(PlaylistItem(mode: mode, seconds: 10, file: file.map { DisplayIO.rel($0) })); plDirty = true; savePlaylist()
+    func removePlaylistFromBoard() {
+        let n = pl.name
+        guard bPlaylists.contains(n) else { return }
+        deletePlaylistFromBoard(n); UserDefaults.standard.removeObject(forKey: sentKey(n))
+        plLog = "Asked the board to delete “\(n)” (still saved on this Mac)."; plOK = nil
     }
-    /// Add a display that is already on the board (from the "On the board" list) to the open playlist.
-    func addBoardItem(_ mode: String) {
-        let n = mode.hasPrefix("custom:") ? String(mode.dropFirst(7)) : ""
-        let u = n.isEmpty ? nil : library.first { DisplayIO.boardName($0.deletingPathExtension().lastPathComponent) == n }
-        addToPlaylist(mode: mode, file: u)
-        sendLog = "added \(n.isEmpty ? mode : n) to playlist “\(pl.name)”; press Send to update the board"; sendOK = nil
+    /// Add a built-in mode or a display that is already on the board. Displays only on this Mac can't be added.
+    func addItem(_ mode: String, seconds: Int = 10) {
+        if mode.hasPrefix("custom:"), !bCustoms.contains(String(mode.dropFirst(7))) {
+            plLog = "“\(mode.dropFirst(7))” is not on the board. Upload it first (open it in the Library, then Send to Unicorn)."; plOK = false; return
+        }
+        guard pl.items.count < 32 else { plLog = "A playlist can have at most 32 items."; plOK = false; return }
+        pl.items.append(PlaylistItem(mode: mode, seconds: max(2, min(3600, seconds)))); edited()
+        let n = mode.hasPrefix("custom:") ? String(mode.dropFirst(7)) : mode
+        plLog = "Added \(n). Press Save when you're done."; plOK = nil
     }
+    /// The ＋ on an “On the board” row.
+    func addBoardItem(_ mode: String) { addItem(mode); sendLog = plLog; sendOK = nil }
     func removePlaylistItems(_ ids: Set<UUID>) {
         guard !ids.isEmpty else { return }
-        pl.items.removeAll { ids.contains($0.id) }; savePlaylist()
+        pl.items.removeAll { ids.contains($0.id) }; edited()
     }
-    func addLibraryItem(_ u: URL) {
-        let n = (try? DisplayIO.load(u)).map { DisplayIO.boardName($0.name) } ?? DisplayIO.boardName(u.deletingPathExtension().lastPathComponent)
-        addToPlaylist(mode: "custom:" + n, file: u)
-    }
-    /// Upload any custom displays the board lacks (without switching to them), store the playlist on the board, start it.
-    func activatePlaylist(play doPlay: Bool = true) {
-        guard !sending else { sendLog = "an upload is already running"; return }
-        guard let up = up, connected else { sendLog = "not connected to MQTT"; sendOK = false; return }
-        guard up.v2 else { sendLog = "playlists need the us-2 firmware on the board"; sendOK = false; return }
-        guard !pl.items.isEmpty else { sendLog = "the playlist is empty"; return }
-        savePlaylist()
-        let p = pl, have = Set(bCustoms)
-        var todo = [(String, URL)]()
-        for it in p.items where it.mode.hasPrefix("custom:") {
-            let n = String(it.mode.dropFirst(7))
-            if have.contains(n) || todo.contains(where: { $0.0 == n }) { continue }
-            let u = it.file.map { DisplayIO.libDir.appendingPathComponent($0) } ?? library.first { DisplayIO.boardName($0.deletingPathExtension().lastPathComponent) == n }
-            if let u = u { todo.append((n, u)) }
+    /// Poll our own copy of the board state (asking it to republish) until `ok` holds. Call off the main thread.
+    func confirmState(timeout: Double, _ ok: @escaping (AppModel) -> Bool) -> Bool {
+        let t0 = DispatchQueue.main.sync { Date() }
+        var last = Date.distantPast
+        while Date().timeIntervalSince(t0) < timeout {
+            if Date().timeIntervalSince(last) > 3 { last = Date(); DispatchQueue.main.sync { self.cmd("refresh", "1") } }
+            Thread.sleep(forTimeInterval: 0.3)
+            if DispatchQueue.main.sync(execute: { self.bStateAt > t0 && ok(self) }) { return true }
         }
-        sending = true; sendOK = nil
+        return false
+    }
+    /// Send ONLY the playlist JSON to the board (never uploads displays), retrying through a board reboot,
+    /// and report success only when the board's own state lists the playlist.
+    func sendPlaylist(play doPlay: Bool) {
+        guard !sending else { plLog = "busy: wait for the current send to finish"; return }
+        guard connected, !base.isEmpty else { plLog = "Not connected to MQTT."; plOK = false; return }
+        guard plSavedName != nil, !plDirty else { plLog = "Save the playlist first."; plOK = false; return }
+        guard !pl.items.isEmpty else { plLog = "The playlist is empty."; plOK = false; return }
+        let p = pl, missing = plMissing
+        let id = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased()
+        sending = true; plOK = nil
+        func say(_ s: String) { DispatchQueue.main.async { self.plLog = s } }
+        func done(_ ok: Bool, _ s: String) { DispatchQueue.main.async { self.sending = false; self.plOK = ok; self.plLog = s; self.sendLog = s; self.sendOK = ok } }
         DispatchQueue.global().async {
-            var errs = [String]()
-            for (i, (n, u)) in todo.enumerated() {
-                DispatchQueue.main.async { self.sendLog = "playlist: uploading \(n) (\(i + 1)/\(todo.count))…" }
-                guard let d0 = try? DisplayIO.load(u) else { errs.append("\(n): cannot read \(DisplayIO.rel(u))"); continue }
-                let d = DispatchQueue.main.sync { self.forBoard(d0) }
-                let r = up.send(name: n, frames: d.frames, play: false) { _, _ in }
-                if !r.ok { errs.append("\(n): \(r.msg)") }
-            }
-            // store it on the board and wait for the board's own answer (never assume success)
-            DispatchQueue.main.sync { self.plResult = ""; self.mq.publish(self.base + "/playlist/save", PlaylistIO.boardJSON(p)) }
-            var ans = ""
-            for _ in 0..<60 {
-                Thread.sleep(forTimeInterval: 0.1)
-                ans = DispatchQueue.main.sync { self.plResult }
-                if !ans.isEmpty { break }
-            }
-            DispatchQueue.main.async {
-                self.sending = false
-                if !ans.hasPrefix("ok playlist \(p.name)") {
-                    self.sendOK = false
-                    self.sendLog = ans.isEmpty ? "the board did not confirm the playlist (no answer in 6 s); nothing changed"
-                                               : "board: " + ans
-                    self.refreshBoard(); return
+            var answer: (ok: Bool, msg: String)? = nil
+            attempts: for attempt in 1...4 {
+                var waited = 0.0      // the board may be rebooting: wait until MQTT and the board are back
+                while !DispatchQueue.main.sync(execute: { self.connected && self.bOnline }) {
+                    if waited == 0 { say("waiting for the board to come online…") }
+                    if waited > 90 { break attempts }
+                    Thread.sleep(forTimeInterval: 0.5); waited += 0.5
                 }
-                self.plUnsent = false
-                if doPlay { self.play("playlist:" + p.name) } else { self.refreshBoard() }
-                self.sendOK = errs.isEmpty
-                let what = doPlay ? "saved on the board and started" : "saved on the board"
-                self.sendLog = errs.isEmpty ? "✓ playlist \(p.name) \(what) (\(p.items.count) items)"
-                    : "playlist \(p.name) \(what), but some items were not uploaded (they will be skipped): " + errs.joined(separator: "; ")
+                say(attempt == 1 ? "sending playlist “\(p.name)” to the board…" : "no answer yet; sending again (try \(attempt) of 4)…")
+                DispatchQueue.main.sync { self.plAnswers = []; self.mq.publish(self.base + "/playlist/save", PlaylistIO.boardJSON(p, id: id)) }
+                for _ in 0..<80 {
+                    Thread.sleep(forTimeInterval: 0.1)
+                    let got = DispatchQueue.main.sync { self.plAnswers }
+                    if let a = got.lazy.compactMap({ PlaylistIO.saveAnswer($0, id: id, name: p.name) }).first { answer = a; break }
+                }
+                if answer != nil { break }
+            }
+            guard let a = answer else { done(false, "The board did not answer (offline or rebooting?). Not confirmed: press Send to board again."); return }
+            guard a.ok else { done(false, "The board refused the playlist: \(a.msg)"); return }
+            say("the board answered “\(a.msg)”; checking its playlist list…")
+            guard self.confirmState(timeout: 15, { $0.bPlaylists.contains(p.name) }) else {
+                done(false, "The board answered, but “\(p.name)” is not in its playlist list. Not confirmed: press Send to board again."); return
+            }
+            DispatchQueue.main.sync { UserDefaults.standard.set(PlaylistIO.signature(p), forKey: self.sentKey(p.name)) }
+            let skip = missing.isEmpty ? "" : " Not on the board, will be skipped: " + missing.joined(separator: ", ") + "."
+            if !doPlay { done(true, "✓ “\(p.name)” is on the board (\(p.items.count) items). Press Play to start it." + skip); return }
+            DispatchQueue.main.sync { self.cmd("mode", "playlist:" + p.name) }
+            let playing = self.confirmState(timeout: 12) { $0.bMode == "playlist:" + p.name }
+            done(playing, playing ? "✓ “\(p.name)” is on the board and playing." + skip
+                                  : "“\(p.name)” is on the board, but it did not confirm it started. Press Play." + skip)
+        }
+    }
+    /// Start the open playlist on the board and confirm from the board's state.
+    func playPlaylist() {
+        let n = pl.name
+        guard connected, bPlaylists.contains(n) else { plLog = "“\(n)” is not on the board yet: Send to board first."; plOK = false; return }
+        plLog = "starting “\(n)”…"; plOK = nil
+        cmd("mode", "playlist:" + n)
+        DispatchQueue.global().async {
+            let ok = self.confirmState(timeout: 12) { $0.bMode == "playlist:" + n }
+            DispatchQueue.main.async {
+                self.plOK = ok
+                self.plLog = ok ? "✓ Playing “\(n)” on the board." : "The board did not confirm it is playing “\(n)” (offline?)."
             }
         }
     }
@@ -541,6 +643,8 @@ struct ContentView: View {
     @State var renaming = ""
     @State var addBuiltin = "clock"
     @State var plSel = Set<UUID>()
+    @State var pendingPlaylist: String? = nil
+    @State var confirmPlDelete = false
     var body: some View {
         HSplitView {
             library.frame(minWidth: 210, idealWidth: 240, maxWidth: 320)
@@ -578,7 +682,6 @@ struct ContentView: View {
                     .contextMenu {
                         Button("Open") { m.open(u) }
                         Button("Send to Unicorn") { m.open(u); m.sendToBoard() }
-                        Button("Add to playlist “\(m.pl.name)”") { m.addLibraryItem(u) }
                         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([u]) }
                         Divider()
                         Button("Move to Trash") { m.trash(u) }
@@ -588,7 +691,7 @@ struct ContentView: View {
                 Button("Refresh") { m.refreshLibrary() }
                 Button("Folder") { NSWorkspace.shared.open(DisplayIO.libDir) }
             }
-            Text("Click to open · double-click to send · right-click to add to a playlist").font(.caption2).foregroundColor(.secondary)
+            Text("Click to open · double-click to send to the board. Playlists use what is on the board.").font(.caption2).foregroundColor(.secondary)
         }.padding(8)
     }
 
@@ -686,7 +789,7 @@ struct ContentView: View {
             Button { m.play(mode) } label: { Image(systemName: "play.fill") }.help("Play on the board").disabled(!m.connected)
             if addable {
                 Button { m.addBoardItem(mode) } label: { Image(systemName: "text.badge.plus") }
-                    .help("Add to playlist “\(m.pl.name)”")
+                    .help("Add to the open playlist (Playlists tab)")
             }
             Button { onDelete() } label: { Image(systemName: "trash") }.help("Delete from the board").disabled(!m.connected)
         }
@@ -694,7 +797,7 @@ struct ContentView: View {
         .padding(.vertical, 1)
         .contextMenu {
             Button("Play on the board") { m.play(mode) }.disabled(!m.connected)
-            if addable { Button("Add to playlist “\(m.pl.name)”") { m.addBoardItem(mode) } }
+            if addable { Button("Add to the open playlist") { m.addBoardItem(mode) } }
             Divider()
             Button("Delete from the board", role: .destructive) { onDelete() }.disabled(!m.connected)
         }
@@ -748,62 +851,130 @@ struct ContentView: View {
     }
 
     var playlists: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let missing = m.plMissing
+        let (status, statusColor) = m.plStatus
+        let boardOnly = m.bPlaylists.filter { !m.plNames.contains($0) }
+        let renamable = m.plSavedName != nil && m.plCleanName != nil && m.plCleanName != m.plSavedName
+        return VStack(alignment: .leading, spacing: 7) {
+            Text("① Add items from “On the board” or a built-in mode  ② Name it  ③ Save  ④ Send to board  ⑤ Play")
+                .font(.caption2).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Picker("", selection: Binding(get: { m.pl.name }, set: { m.selectPlaylist($0) })) {
-                    ForEach(m.plNames.contains(m.pl.name) ? m.plNames : m.plNames + [m.pl.name], id: \.self) { Text($0).tag($0) }
-                }.frame(maxWidth: .infinity)
-                Button { m.newPlaylist() } label: { Image(systemName: "plus") }.help("New playlist")
-                Button { m.deletePlaylist() } label: { Image(systemName: "trash") }.help("Delete this playlist (here and on the board)")
+                Picker("Open", selection: Binding(get: { m.plSource }, set: { t in
+                    if m.plDirty && t != m.plSource { pendingPlaylist = t } else { m.choosePlaylist(t) } })) {
+                    Text("— new playlist —").tag("new")
+                    if !m.plSource.hasPrefix("mac:") && m.plSource != "new" && !boardOnly.contains(String(m.plSource.dropFirst(6))) {
+                        Text(String(m.plSource.dropFirst(6))).tag(m.plSource)
+                    }
+                    Section("Saved on this Mac") {
+                        ForEach(m.plNames, id: \.self) { n in Text(n + (m.bPlaylists.contains(n) ? "   (also on the board)" : "   (Mac only)")).tag("mac:" + n) }
+                    }
+                    Section("Only on the board") {
+                        ForEach(boardOnly, id: \.self) { n in Text(n + "   (board only: import)").tag("board:" + n) }
+                    }
+                }
+                Button { if m.plDirty { pendingPlaylist = "new" } else { m.newPlaylist() } } label: { Image(systemName: "plus") }.help("New playlist")
+                Button { confirmPlDelete = true } label: { Image(systemName: "trash") }.disabled(m.plSavedName == nil)
+                    .help("Delete this playlist from this Mac (the board copy stays; use Remove from board)")
             }
             HStack {
-                TextField("rename", text: $renaming).textFieldStyle(.roundedBorder).onSubmit { m.renamePlaylist(renaming) }
-                Button("Rename") { m.renamePlaylist(renaming) }.disabled(renaming.isEmpty)
-            }.onAppear { renaming = m.pl.name }.onChange(of: m.pl.name) { renaming = $0 }
+                Text("Name")
+                TextField("e.g. halloween", text: Binding(get: { m.pl.name }, set: { m.pl.name = $0; m.edited() }))
+                    .textFieldStyle(.roundedBorder).onSubmit { m.savePlaylist() }
+                if renamable { Button("Rename") { m.renamePlaylist() }.help("Rename the saved playlist on this Mac") }
+                Button(renamable ? "Save copy" : "Save") { m.savePlaylist() }
+                    .buttonStyle(.borderedProminent).tint(m.plDirty || m.plSavedName == nil ? .accentColor : .gray)
+                    .disabled(m.pl.items.isEmpty || m.plCleanName == nil)
+                    .help("Save this playlist on this Mac")
+            }
+            Text(status).font(.caption).foregroundColor(statusColor).fixedSize(horizontal: false, vertical: true)
             List(selection: $plSel) {
+                if m.pl.items.isEmpty {
+                    Text("No items yet. Add displays with ＋ on the Board tab (“On the board”), or a built-in mode below.").font(.caption).foregroundColor(.secondary)
+                }
                 ForEach($m.pl.items) { $it in
                     let showing = m.bMode == "playlist:" + m.pl.name && m.bPlaying == (it.mode == "date" ? "today" : it.mode)
+                    let absent = it.mode.hasPrefix("custom:") && !m.bCustoms.contains(String(it.mode.dropFirst(7)))
+                    VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Image(systemName: "line.3.horizontal").foregroundColor(.secondary)
                         Text(it.mode.hasPrefix("custom:") ? String(it.mode.dropFirst(7)) : "⌚︎ " + it.mode)
-                            .fontWeight(showing ? .bold : .regular).lineLimit(1)
-                        if it.mode.hasPrefix("custom:") && !m.bCustoms.contains(String(it.mode.dropFirst(7))) {
-                            Image(systemName: "icloud.and.arrow.up").foregroundColor(.orange).help("Not on the board yet; uploaded on Send")
+                            .fontWeight(showing ? .bold : .regular).foregroundColor(absent ? .orange : .primary).lineLimit(1)
+                        if absent {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                                .help("Not on the board: the board will skip it. Upload it first (open it in the Library → Send to Unicorn).")
                         }
                         Spacer()
-                        TextField("", value: $it.seconds, formatter: NumberFormatter()).frame(width: 44).textFieldStyle(.roundedBorder)
-                            .onSubmit { it.seconds = max(2, min(3600, it.seconds)); m.savePlaylist() }
-                        Stepper("", value: Binding(get: { it.seconds }, set: { it.seconds = max(2, min(3600, $0)); m.savePlaylist() }),
-                                in: 2...3600).labelsHidden().help("Seconds this item is shown")
-                        Text("s").font(.caption)
                         Button { m.removePlaylistItems([it.id]) } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless).help("Remove from the playlist")
+                    }
+                    HStack(spacing: 4) {
+                        TextField("", value: Binding(get: { it.seconds }, set: { it.seconds = max(2, min(3600, $0)); m.edited() }), formatter: NumberFormatter())
+                            .frame(width: 44).textFieldStyle(.roundedBorder)
+                        Stepper("", value: Binding(get: { it.seconds }, set: { it.seconds = max(2, min(3600, $0)); m.edited() }),
+                                in: 2...3600).labelsHidden().help("Seconds this item is shown")
+                        Text("s").font(.caption)
+                        Spacer(minLength: 8)
+                        Text("Speed").font(.caption).foregroundColor(.secondary)
+                        Text(it.speed.map { "\($0)" } ?? "–").font(.caption.monospacedDigit()).frame(width: 18, alignment: .trailing)
+                        Stepper("", value: Binding(get: { it.speed ?? m.bSpeedInt }, set: { it.speed = max(1, min(20, $0)); m.edited() }),
+                                in: 1...20).labelsHidden()
+                            .help("Animation speed while this item plays: 10 = normal (as made), lower = slower, higher = faster")
+                        Text(PlaylistItem.speedLabel(it.speed)).font(.caption)
+                            .foregroundColor(it.speed == PlaylistItem.normalSpeed ? .secondary : .blue).frame(width: 64, alignment: .leading)
+                    }.padding(.leading, 20)
                     }
                     .tag(it.id)
                     .contextMenu { Button("Remove from playlist", role: .destructive) { m.removePlaylistItems([it.id]) } }
                     .listRowBackground(showing ? Color.green.opacity(0.15) : Color.clear)
                 }
-                .onMove { from, to in m.pl.items.move(fromOffsets: from, toOffset: to); m.savePlaylist() }
+                .onMove { from, to in m.pl.items.move(fromOffsets: from, toOffset: to); m.edited() }
                 .onDelete { idx in m.removePlaylistItems(Set(idx.map { m.pl.items[$0].id })) }
             }
             .onDeleteCommand { m.removePlaylistItems(plSel); plSel = [] }
             HStack {
-                Picker("", selection: $addBuiltin) { ForEach(m.builtins + (m.builtins.contains("date") ? [] : ["date"]), id: \.self) { Text($0).tag($0) } }.frame(width: 130)
-                Button("Add mode") { m.addToPlaylist(mode: addBuiltin) }
+                Picker("Add", selection: $addBuiltin) {
+                    Section("Built-in") { ForEach(m.builtins + (m.builtins.contains("date") ? [] : ["date"]), id: \.self) { Text($0).tag($0) } }
+                    Section("On the board") { ForEach(m.bCustoms, id: \.self) { Text($0).tag("custom:" + $0) } }
+                }
+                Button("Add") { m.addItem(addBuiltin) }
             }
-            Button("Add the open display") { if let u = m.fileURL { m.addLibraryItem(u) } else { m.sendLog = "save the display to the library first" } }
-                .disabled(m.fileURL == nil)
-            Text("Drag rows to reorder · select + Delete key (or −) to remove · ＋ on an “On the board” row or right-click a library item to add").font(.caption2).foregroundColor(.secondary)
-            if m.plUnsent { Text("Changes are saved on this Mac only; press Send to update the board.").font(.caption).foregroundColor(.orange) }
+            Text("Speed per item: 10 = normal (as the animation was made), 1 = slowest, 20 = fastest. Items without their own speed use the board's Speed slider (now \(m.bSpeedInt)).")
+                .font(.caption2).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Only displays already on the board can be added. New animation? Open it in the Library and choose Send to Unicorn first.")
+                .font(.caption2).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !missing.isEmpty {
+                Text("⚠︎ Not on the board (will be skipped): " + missing.joined(separator: ", ")).font(.caption).foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
-                Button(m.sending ? "Sending…" : "Send & play on the board") { m.savePlaylist(); m.activatePlaylist(play: true) }
-                    .buttonStyle(.borderedProminent).disabled(m.sending || !m.connected || m.pl.items.isEmpty)
-                Button("Send only") { m.savePlaylist(); m.activatePlaylist(play: false) }
-                    .disabled(m.sending || !m.connected || m.pl.items.isEmpty).help("Store on the board without switching to it")
+                Button(m.sending ? "Sending…" : "Send to board") { m.sendPlaylist(play: false) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(m.sending || !m.connected || m.plSavedName == nil || m.plDirty || m.pl.items.isEmpty)
+                    .help(m.plDirty || m.plSavedName == nil ? "Save first" : "Store this playlist on the board (sends only the playlist, never animations)")
+                Button("▶︎ Play") { m.playPlaylist() }
+                    .disabled(m.sending || !m.connected || !m.plOnBoard).help("Play this playlist on the board")
+                Button("Send & play") { m.sendPlaylist(play: true) }
+                    .disabled(m.sending || !m.connected || m.plSavedName == nil || m.plDirty || m.pl.items.isEmpty)
+            }
+            if m.plOnBoard {
+                Button("Remove from board") { m.removePlaylistFromBoard() }.disabled(m.sending || !m.connected)
+                    .help("Delete this playlist from the board (the copy on this Mac stays)")
+            }
+            if !m.plLog.isEmpty {
+                Text(m.plLog).font(.caption).foregroundColor(m.plOK == false ? .red : (m.plOK == true ? .green : .secondary))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if m.bMode == "playlist:" + m.pl.name { Text("Playing now: \(m.bPlaying ?? "—")").font(.caption).foregroundColor(.green) }
         }.padding(8)
-        .onDisappear { m.savePlaylist() }
+        .alert("Discard unsaved changes to “\(m.pl.name.isEmpty ? "the new playlist" : m.pl.name)”?",
+               isPresented: Binding(get: { pendingPlaylist != nil }, set: { if !$0 { pendingPlaylist = nil } })) {
+            Button("Discard", role: .destructive) { if let t = pendingPlaylist { m.choosePlaylist(t) }; pendingPlaylist = nil }
+            Button("Cancel", role: .cancel) { pendingPlaylist = nil }
+        } message: { Text("Press Cancel, then Save, to keep them.") }
+        .alert("Delete “\(m.plSavedName ?? "")” from this Mac?", isPresented: $confirmPlDelete) {
+            Button("Delete", role: .destructive) { m.deletePlaylist() }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text(m.plOnBoard ? "The copy on the board is kept (use Remove from board for that)." : "It is not on the board.") }
     }
 }
 
