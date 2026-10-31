@@ -3,6 +3,8 @@
 Paint, animate and schedule displays for the Pimoroni **Cosmic (32×32)**, **Galactic (53×11)** and
 **Stellar (16×16)** Unicorn boards (Raspberry Pi Pico W), all over your *local* MQTT broker.
 
+> **Hardware testing:** only the **Cosmic Unicorn** has been tested on a real board. **Galactic and Stellar support has NOT been tested on hardware** yet; it runs in desktop simulation only. Reports and fixes are welcome; see [docs/BOARDS.md](docs/BOARDS.md).
+
 | Part | Folder | What it does |
 |---|---|---|
 | Firmware | `firmware/` | One MicroPython `main.py` for all three boards (auto-detects the board). Clock, date, calendar agenda, scrolling text, effects, uploaded custom displays, **playlists**, Home Assistant MQTT discovery. |

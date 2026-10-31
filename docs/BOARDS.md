@@ -3,8 +3,8 @@
 | Board | Pixels | Firmware | App canvas | Rotation | Tested |
 |---|---|---|---|---|---|
 | Cosmic Unicorn | 32×32 | auto-detected (`cosmic` module) | 32×32 | 0/90/180/270 | **real hardware** |
-| Galactic Unicorn | 53×11 | auto-detected (`galactic` module) | 53×11 | 0/180 | desktop simulation only |
-| Stellar Unicorn | 16×16 | auto-detected (`stellar` module) | 16×16 | 0/90/180/270 | desktop simulation only |
+| Galactic Unicorn | 53×11 | auto-detected (`galactic` module) | 53×11 | 0/180 | **not tested on hardware** (simulation only) |
+| Stellar Unicorn | 16×16 | auto-detected (`stellar` module) | 16×16 | 0/90/180/270 | **not tested on hardware** (simulation only) |
 
 **Firmware.** Pimoroni ships one MicroPython build per board; `main.py` imports whichever board module exists
 and reads the size from `picographics`. Layouts adapt: the Galactic shows clock/date/agenda on one row with a
