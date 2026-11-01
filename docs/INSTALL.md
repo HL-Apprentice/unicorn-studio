@@ -55,10 +55,10 @@ See [homeassistant/README.md](../homeassistant/README.md).
 ## 5. Linux app
 1. Install pipx if you do not have it, for example `sudo apt install pipx` (Debian/Ubuntu) or
    `sudo dnf install pipx` (Fedora).
-2. Download `unicorn-studio-2.1.0-linux.tar.gz` and `SHA256SUMS-linux.txt` from the release, check and install:
+2. Download `unicorn-studio-2.2.0-linux.tar.gz` and `SHA256SUMS-linux.txt` from the release, check and install:
    ```
    sha256sum -c SHA256SUMS-linux.txt --ignore-missing
-   tar xzf unicorn-studio-2.1.0-linux.tar.gz && cd unicorn-studio-2.1.0-linux && ./install.sh
+   tar xzf unicorn-studio-2.2.0-linux.tar.gz && cd unicorn-studio-2.2.0-linux && ./install.sh
    ```
    `install.sh` runs `pipx install` on the wheel (or uses a venv in `~/.local/share/unicorn-studio` without pipx).
    It needs no root and adds **Unicorn Studio** to your applications menu.

@@ -2,7 +2,7 @@
 # Collect release assets into dist/: app zip (built by mac-app/build.sh), firmware, HA package, docs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-V="${VERSION:-2.1.0}"
+V="${VERSION:-2.2.0}"
 [ -f "mac-app/dist/Unicorn-Studio-$V-macOS-universal.zip" ] || (cd mac-app && ./build.sh)
 R="dist/unicorn-studio-$V"; rm -rf "$R"; mkdir -p "$R"
 cp "mac-app/dist/Unicorn-Studio-$V-macOS-universal.zip" "mac-app/dist/Unicorn-Studio-$V-macOS-universal.zip.sha256" dist/

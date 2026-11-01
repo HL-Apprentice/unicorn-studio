@@ -21,7 +21,7 @@ Nothing talks to the internet: no cloud, no telemetry, no open ports on the Mac,
    (from `firmware/secrets.example.py`) to it. → [docs/INSTALL.md](docs/INSTALL.md)
 2. In Home Assistant the board appears under **Settings → Devices → MQTT**.
 3. Install the app from the release zip (right-click → **Open** the first time, it is ad-hoc signed, not notarized).
-4. On Linux: `tar xzf unicorn-studio-2.1.0-linux.tar.gz && cd unicorn-studio-2.1.0-linux && ./install.sh`
+4. On Linux: `tar xzf unicorn-studio-2.2.0-linux.tar.gz && cd unicorn-studio-2.2.0-linux && ./install.sh`
    (pipx, no root). → [docs/INSTALL.md](docs/INSTALL.md#5-linux-app)
 5. Optional: `cli/unicorn` for scripting, `homeassistant/unicorn_agenda.yaml` for the calendar view.
 

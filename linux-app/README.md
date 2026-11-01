@@ -70,15 +70,15 @@ You need Python 3.9 or newer and either `pipx` (recommended) or `python3-venv`.
 
 ```bash
 # from the release archive
-tar xzf unicorn-studio-2.1.0-linux.tar.gz
-cd unicorn-studio-2.1.0-linux
+tar xzf unicorn-studio-2.2.0-linux.tar.gz
+cd unicorn-studio-2.2.0-linux
 ./install.sh                 # pipx install + adds "Unicorn Studio" to your app menu
 ```
 
 Or by hand:
 
 ```bash
-pipx install ./unicorn_studio-2.1.0-py3-none-any.whl
+pipx install ./unicorn_studio-2.2.0-py3-none-any.whl
 unicorn-studio --install-desktop      # .desktop file + icon in ~/.local/share
 unicorn-studio
 ```

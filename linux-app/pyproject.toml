@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unicorn-studio"
-version = "2.1.0"
+version = "2.2.0"
 description = "Linux desktop app for Pimoroni Cosmic, Galactic and Stellar Unicorn boards running the Unicorn Studio firmware (MQTT)"
 readme = "README.md"
 license = { text = "MIT (code); CC-BY-4.0 (bundled animations, see LICENSE-ASSETS)" }
